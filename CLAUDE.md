@@ -13,7 +13,7 @@ Praxis (formerly The Creation Engine / TCE) is the sensory integration cortex of
 
 **Praxis does not generate code.** It provides context intelligence that makes vibe coding reliable, repeatable, and self-improving. It bridges knowing and doing — turns intent into practice. It provides session continuity.
 
-**Status: Phase 1 (Foundation) — initial build.** Vendored files synced from NeuroGraph canonical (2026-03-18).
+**Status: v0.8.0 Alpha — all 8 phases complete.** Vendored files synced from NeuroGraph canonical (2026-03-18). All three pheromone sensors implemented. CPS with substrate-routed retrieval. Session Bridge solving context death. 79 tests passing.
 
 ---
 
@@ -45,10 +45,16 @@ Praxis (formerly The Creation Engine / TCE) is the sensory integration cortex of
 │   ├── ng_ecosystem.py
 │   ├── openclaw_adapter.py
 │   └── ng_autonomic.py
-├── tests/                         # Test suite
+├── tests/                         # Test suite (79 tests)
 │   ├── test_config.py
 │   ├── test_signals.py
-│   └── test_hook.py
+│   ├── test_hook.py
+│   ├── test_conversation.py
+│   ├── test_cps.py
+│   ├── test_session_bridge.py
+│   ├── test_artifact.py
+│   ├── test_outcome.py
+│   └── test_integration.py
 └── docs/
     └── ETHICS.md                  # Ethics doc (planned)
 ```
@@ -77,11 +83,11 @@ There is no explicit routing, classification, or pipeline staged processing. The
 
 ## 3. The Three Pheromones
 
-| Sensor | File | Status | Phase |
-|--------|------|--------|-------|
-| Conversation Stream | `sensors/conversation.py` | Interface + feed() | Phase 1 |
-| Artifact Stream | `sensors/artifact.py` | Stub | Phase 5 |
-| Outcome Stream | `sensors/outcome.py` | Stub | Phase 6 |
+| Sensor | File | Status |
+|--------|------|--------|
+| Conversation Stream | `sensors/conversation.py` | Full — temporal binding, both directions, multi-speaker |
+| Artifact Stream | `sensors/artifact.py` | Full — lifecycle tracking, reference counting, stale detection |
+| Outcome Stream | `sensors/outcome.py` | Full — reward signals, severity scaling, intent tracing |
 
 All sensors extend `sensors/base.py` (SensorBase ABC).
 
@@ -105,14 +111,14 @@ All five vendored files in `vendored/` directory, synced from NeuroGraph canonic
 
 | Phase | Version | What | Status |
 |-------|---------|------|--------|
-| 1 | v0.1 | Foundation — module structure, config, hook, sensor interfaces | **Current** |
-| 2 | v0.2 | Conversation Stream Sensor — full implementation | Planned |
-| 3 | v0.3 | Context Persistence Store — msgpack persistence, substrate retrieval | Planned |
-| 4 | v0.4 | Session Bridge — auto context surfacing, outcome feedback | Planned |
-| 5 | v0.5 | Artifact Stream Sensor — file monitoring, reference tracking | Planned |
-| 6 | v0.6 | Outcome Stream Sensor — reward injection, intent tracing | Planned |
-| 7 | v0.7 | Autonomic & Ecosystem Integration — full Tier 2, cold start | Planned |
-| 8 | v0.8 | Hardening & Alpha Release | Planned |
+| 1 | v0.1 | Foundation — module structure, config, hook, sensor interfaces | Done |
+| 2 | v0.2 | Conversation Stream Sensor — temporal binding, both directions | Done |
+| 3 | v0.3 | Context Persistence Store — msgpack, substrate-routed retrieval | Done |
+| 4 | v0.4 | Session Bridge — auto context surfacing, usage tracking | Done |
+| 5 | v0.5 | Artifact Stream Sensor — lifecycle tracking, reference counting | Done |
+| 6 | v0.6 | Outcome Stream Sensor — reward injection, intent tracing | Done |
+| 7 | v0.7 | Autonomic & Ecosystem Integration — cold start, integration tests | Done |
+| 8 | v0.8 | Hardening & Alpha Release — 79 tests, full validation | **Current** |
 
 ---
 

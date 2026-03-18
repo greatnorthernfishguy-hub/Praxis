@@ -2,7 +2,7 @@
   "_schema": "et_module/2.0",
   "module_id": "praxis",
   "display_name": "Praxis",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "description": "Stigmergic intent-to-action substrate. Captures conversation, artifact, and outcome signals into NG-Lite. Bridges knowing and doing.",
   "git_remote": "https://github.com/greatnorthernfishguy-hub/Praxis.git",
   "git_branch": "main",
