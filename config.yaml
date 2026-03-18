@@ -1,0 +1,44 @@
+# Praxis Configuration — PRD §13
+# All values shown are defaults. Uncomment and modify to override.
+
+praxis:
+  # Sensor configuration
+  sensors:
+    conversation:
+      enabled: true
+      temporal_window_seconds: 300
+      capture_both_directions: true
+      min_message_length: 10
+    artifact:
+      enabled: true
+      temporal_window_seconds: 3600
+      monitor_interval_seconds: 60
+      stale_threshold_days: 30
+    outcome:
+      enabled: true
+      positive_reward_strength: 0.7
+      negative_reward_strength: -0.5
+
+  # Context Persistence Store
+  cps:
+    storage_path: ~/.et_modules/praxis/cps.msgpack
+    max_entries: 50000
+
+  # Surfacing
+  surfacing:
+    max_context_items: 10
+    min_activation_threshold: 0.6
+    session_start_auto_surface: true
+
+  # Session Bridge
+  session_bridge:
+    auto_generate_summary: true
+    summary_max_tokens: 500
+    context_injection_format: markdown
+
+  # NG-Lite
+  ng_lite:
+    enabled: true
+    module_id: praxis
+    state_path: ~/.et_modules/praxis/ng_lite_state.json
+    checkpoint_interval_seconds: 300
