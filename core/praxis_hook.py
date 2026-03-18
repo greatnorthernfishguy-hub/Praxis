@@ -41,12 +41,17 @@ License: AGPL-3.0
 #         outcomes linking new signal to each recent signal.
 #         Temporal binding strength decays with age (newer = stronger).
 # [2026-03-18] Claude (Opus 4.6) — Phase 3: CPS integration.
-#   What: Initialize CPS in __init__. Store conversation entries in CPS
-#         on each on_message. Checkpoint CPS on save. Expose CPS stats.
-#   Why:  PRD §8 — CPS stores intent-behavior mappings. PRD §14 Phase 3.
-#   How:  CPS initialized with ecosystem ref for substrate-routed
-#         retrieval. Each captured conversation stores as INTENT entry.
-#         CPS saved alongside ecosystem on checkpoint.
+#   What: Initialize CPS in __init__. Store conversation entries in CPS.
+#   Why:  PRD §8 — CPS stores intent-behavior mappings.
+#   How:  CPS initialized with ecosystem ref. Conversation → INTENT entries.
+# [2026-03-18] Claude (Opus 4.6) — Phase 4: Session Bridge integration.
+#   What: Initialize SessionBridge. Auto-surface context on first message.
+#         Track usage of surfaced context. Session end/start lifecycle.
+#   Why:  PRD §8.4 — solves context death. PRD §14 Phase 4.
+#   How:  First message triggers surface_context() → format → return in
+#         result dict. Subsequent messages track_usage() against surfaced
+#         items. end_session() generates SESSION_SUMMARY. start_session()
+#         resets turn tracking.
 # -------------------
 """
 
@@ -122,10 +127,30 @@ class PraxisHook(OpenClawAdapter):
             ecosystem=self._eco,
         )
 
+        # --- Initialize Session Bridge (PRD §8.4) ---
+        from core.session_bridge import SessionBridge
+
+        bridge_config = {
+            "max_context_items": self._cfg.surfacing.max_context_items,
+            "min_activation_threshold": self._cfg.surfacing.min_activation_threshold,
+            "session_start_auto_surface": self._cfg.surfacing.session_start_auto_surface,
+            "auto_generate_summary": self._cfg.session_bridge.auto_generate_summary,
+            "summary_max_tokens": self._cfg.session_bridge.summary_max_tokens,
+            "context_injection_format": self._cfg.session_bridge.context_injection_format,
+        }
+        self._bridge = SessionBridge(
+            config=bridge_config,
+            cps=self._cps,
+            ecosystem=self._eco,
+            embed_fn=self._embed,
+        )
+
         # --- Session Tracking ---
         self._session_id = f"session_{int(time.time())}"
+        self._previous_session_id: Optional[str] = None
         self._turn_index = 0
         self._signal_count = 0
+        self._session_context: Optional[str] = None
 
         # --- Autonomic State (PRD §9 — read only) ---
         self._autonomic_state = "PARASYMPATHETIC"
@@ -185,18 +210,14 @@ class PraxisHook(OpenClawAdapter):
     ) -> Dict[str, Any]:
         """Praxis-specific processing on each OpenClaw message.
 
-        Phase 2 signal-to-substrate flow (PRD §6.4):
-        1. Feed text + embedding to ConversationSensor
-        2. Record the signal to the substrate (raw embedding — Law 7)
-        3. Create temporal synapses to recent signals within the window
-        4. Read autonomic state and adjust behavior
-        5. Auto-checkpoint
-
-        Temporal binding creates associative structure between signals
-        that co-occur in time. Binding strength decays with age —
-        a message from 10 seconds ago binds more strongly than one
-        from 280 seconds ago. This gives the substrate temporal
-        context without explicit classification.
+        Signal-to-substrate flow (PRD §6.4):
+        1. On first message: surface prior context via Session Bridge
+        2. Feed text + embedding to ConversationSensor
+        3. Record the signal to the substrate (raw embedding — Law 7)
+        4. Store in CPS as INTENT entry
+        5. Create temporal synapses to recent signals within the window
+        6. Track usage of previously surfaced context
+        7. Auto-checkpoint
         """
         self._turn_index += 1
         self._signal_count += 1
@@ -204,12 +225,27 @@ class PraxisHook(OpenClawAdapter):
         # Read autonomic state (PRD §9)
         self._read_autonomic()
 
+        # First message in session: surface prior context (PRD §8.4)
+        surfaced_context = None
+        if self._turn_index == 1 and self._cfg.surfacing.session_start_auto_surface:
+            items = self._bridge.surface_context(
+                initial_message=text,
+                embedding=embedding,
+                session_id=self._session_id,
+            )
+            if items:
+                surfaced_context = self._bridge.format_context(items)
+                self._session_context = surfaced_context
+
         # Skip short messages unless SYMPATHETIC (capture everything)
         if (
             len(text) < self._cfg.sensors.conversation.min_message_length
             and self._autonomic_state != "SYMPATHETIC"
         ):
-            return {"status": "skipped", "reason": "below_min_length"}
+            result: Dict[str, Any] = {"status": "skipped", "reason": "below_min_length"}
+            if surfaced_context:
+                result["surfaced_context"] = surfaced_context
+            return result
 
         # 1. Feed to ConversationSensor — creates signal + adds to temporal window
         signal = self._conv_sensor.feed(
@@ -267,13 +303,21 @@ class PraxisHook(OpenClawAdapter):
             signal, embedding, signal_target_id
         )
 
-        # 5. Auto-checkpoint
+        # 5. Track usage of previously surfaced context (outcome feedback)
+        used_ids: List[str] = []
+        if self._turn_index > 1:
+            try:
+                used_ids = self._bridge.track_usage(text, embedding)
+            except Exception as exc:
+                logger.debug("Usage tracking failed: %s", exc)
+
+        # 6. Auto-checkpoint
         now = time.time()
         if now - self._last_checkpoint > self._checkpoint_interval:
             self._checkpoint()
             self._last_checkpoint = now
 
-        return {
+        result = {
             "status": "captured",
             "signal_id": signal.signal_id,
             "cps_entry_id": cps_entry_id,
@@ -282,9 +326,13 @@ class PraxisHook(OpenClawAdapter):
             "temporal_bindings": bindings_created,
             "temporal_window_size": len(self._conv_sensor._recent),
             "cps_entries": self._cps.count,
+            "context_used": used_ids,
             "autonomic_state": self._autonomic_state,
             "total_signals": self._signal_count,
         }
+        if surfaced_context:
+            result["surfaced_context"] = surfaced_context
+        return result
 
     def _bind_temporal(
         self,
@@ -408,12 +456,49 @@ class PraxisHook(OpenClawAdapter):
             logger.debug("CPS checkpoint failed: %s", exc)
 
     # -----------------------------------------------------------------
+    # Session lifecycle (PRD §8.4)
+    # -----------------------------------------------------------------
+
+    def end_session(self) -> Optional[str]:
+        """End the current session — generate summary, checkpoint.
+
+        Called when a session ends. Generates a SESSION_SUMMARY entry
+        in the CPS from the session's accumulated context.
+
+        Returns:
+            Summary text, or None if session was empty.
+        """
+        summary = None
+        if self._cfg.session_bridge.auto_generate_summary:
+            summary = self._bridge.generate_summary(self._session_id)
+
+        self._previous_session_id = self._session_id
+        self._checkpoint()
+        logger.info(
+            "[Praxis] Session %s ended — %d signals, %d CPS entries",
+            self._session_id, self._signal_count, self._cps.count,
+        )
+        return summary
+
+    def start_session(self) -> str:
+        """Start a new session, preserving state from the previous one.
+
+        Returns:
+            The new session ID.
+        """
+        self._session_id = f"session_{int(time.time())}"
+        self._turn_index = 0
+        self._session_context = None
+        logger.info("[Praxis] New session started: %s", self._session_id)
+        return self._session_id
+
+    # -----------------------------------------------------------------
     # Shutdown
     # -----------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Graceful shutdown — checkpoint."""
-        self._checkpoint()
+        """Graceful shutdown — end session, checkpoint."""
+        self.end_session()
         self._conv_sensor.shutdown()
         logger.info("[Praxis] Shutdown complete")
 
