@@ -114,6 +114,26 @@ class PraxisHook(OpenClawAdapter):
         self._conv_sensor = ConversationSensor(config=conv_config)
         self._conv_sensor.set_log_path(self._data_dir / "conversation.jsonl")
 
+        # --- Initialize Artifact Sensor (PRD §4.2) ---
+        from sensors.artifact import ArtifactSensor
+
+        art_config = {
+            "temporal_window_seconds": self._cfg.sensors.artifact.temporal_window_seconds,
+            "stale_threshold_days": self._cfg.sensors.artifact.stale_threshold_days,
+        }
+        self._art_sensor = ArtifactSensor(config=art_config)
+        self._art_sensor.set_log_path(self._data_dir / "artifact.jsonl")
+
+        # --- Initialize Outcome Sensor (PRD §4.3) ---
+        from sensors.outcome import OutcomeSensor
+
+        out_config = {
+            "positive_reward_strength": self._cfg.sensors.outcome.positive_reward_strength,
+            "negative_reward_strength": self._cfg.sensors.outcome.negative_reward_strength,
+        }
+        self._out_sensor = OutcomeSensor(config=out_config)
+        self._out_sensor.set_log_path(self._data_dir / "outcome.jsonl")
+
         # --- Initialize Context Persistence Store (PRD §8) ---
         from store.cps import ContextPersistenceStore
 
@@ -392,6 +412,171 @@ class PraxisHook(OpenClawAdapter):
         self._conv_sensor.increment_bindings(bindings)
         return bindings
 
+    # -----------------------------------------------------------------
+    # Artifact recording (PRD §4.2 — Phase 5)
+    # -----------------------------------------------------------------
+
+    def record_artifact(
+        self,
+        artifact_id: str,
+        content: str,
+        artifact_type: str = "other",
+        event_type: str = "reference",
+        layer_depth: str = "implementation",
+    ) -> Dict[str, Any]:
+        """Record an artifact lifecycle event.
+
+        Called externally when artifacts are created, modified, referenced,
+        or deleted. Embeds the content, records to sensor, substrate, and CPS.
+        """
+        embedding = self._embed(content)
+
+        if event_type == "delete":
+            signal = self._art_sensor.record_delete(
+                artifact_id, embedding, self._session_id
+            )
+        elif event_type in ("create", "modify"):
+            import hashlib
+            content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+            signal = self._art_sensor.register_artifact(
+                artifact_id=artifact_id,
+                embedding=embedding,
+                artifact_type=artifact_type,
+                content_hash=content_hash,
+                session_id=self._session_id,
+                layer_depth=layer_depth,
+            )
+        else:
+            signal = self._art_sensor.record_reference(
+                artifact_id, embedding, self._session_id, layer_depth
+            )
+
+        if signal is None:
+            return {"status": "skipped", "artifact_id": artifact_id}
+
+        self._signal_count += 1
+
+        # Record to substrate
+        try:
+            self._eco.record_outcome(
+                embedding,
+                target_id=f"artifact:{artifact_id}",
+                success=True,
+                metadata={
+                    "source": "praxis",
+                    "pheromone": "artifact",
+                    "event_type": event_type,
+                    "artifact_type": artifact_type,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Artifact substrate record failed: %s", exc)
+
+        # Store in CPS
+        try:
+            self._cps.store_from_signal(
+                content=content[:500],
+                embedding=embedding,
+                entry_type="ARTIFACT",
+                pheromone_source="artifact",
+                session_id=self._session_id,
+                layer_depth=layer_depth,
+                metadata={
+                    "artifact_id": artifact_id,
+                    "event_type": event_type,
+                    "artifact_type": artifact_type,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Artifact CPS store failed: %s", exc)
+
+        return {
+            "status": "recorded",
+            "signal_id": signal.signal_id,
+            "artifact_id": artifact_id,
+            "event_type": event_type,
+        }
+
+    # -----------------------------------------------------------------
+    # Outcome recording (PRD §4.3 — Phase 6)
+    # -----------------------------------------------------------------
+
+    def record_outcome(
+        self,
+        context: str,
+        outcome_type: str,
+        success: bool,
+        severity: float = 0.5,
+        related_intent_ids: Optional[List[str]] = None,
+        layer_depth: str = "implementation",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record an outcome event with reward signal.
+
+        Called externally when build/test/review/deploy outcomes arrive.
+        Embeds the context, records to sensor (which computes reward
+        strength), then records to substrate and CPS.
+        """
+        embedding = self._embed(context)
+
+        signal, reward_strength = self._out_sensor.record_outcome(
+            embedding=embedding,
+            outcome_type=outcome_type,
+            success=success,
+            severity=severity,
+            related_intent_ids=related_intent_ids,
+            session_id=self._session_id,
+            layer_depth=layer_depth,
+            metadata=metadata,
+        )
+
+        self._signal_count += 1
+
+        # Record to substrate with reward strength
+        try:
+            self._eco.record_outcome(
+                embedding,
+                target_id=f"outcome:{signal.signal_id}",
+                success=success,
+                strength=abs(reward_strength),
+                metadata={
+                    "source": "praxis",
+                    "pheromone": "outcome",
+                    "outcome_type": outcome_type,
+                    "reward_strength": round(reward_strength, 4),
+                },
+            )
+        except Exception as exc:
+            logger.debug("Outcome substrate record failed: %s", exc)
+
+        # Store in CPS
+        try:
+            self._cps.store_from_signal(
+                content=context[:500],
+                embedding=embedding,
+                entry_type="OUTCOME",
+                pheromone_source="outcome",
+                session_id=self._session_id,
+                layer_depth=layer_depth,
+                outcome_signal=reward_strength,
+                metadata={
+                    "outcome_type": outcome_type,
+                    "success": success,
+                    "severity": severity,
+                    "signal_id": signal.signal_id,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Outcome CPS store failed: %s", exc)
+
+        return {
+            "status": "recorded",
+            "signal_id": signal.signal_id,
+            "outcome_type": outcome_type,
+            "success": success,
+            "reward_strength": round(reward_strength, 4),
+        }
+
     def _module_stats(self) -> Dict[str, Any]:
         """Praxis-specific telemetry."""
         return {
@@ -400,12 +585,9 @@ class PraxisHook(OpenClawAdapter):
             "signal_count": self._signal_count,
             "autonomic_state": self._autonomic_state,
             "conversation_sensor": self._conv_sensor.get_stats(),
+            "artifact_sensor": self._art_sensor.get_stats(),
+            "outcome_sensor": self._out_sensor.get_stats(),
             "cps": self._cps.get_stats(),
-            "sensors": {
-                "conversation": {"enabled": self._cfg.sensors.conversation.enabled},
-                "artifact": {"enabled": self._cfg.sensors.artifact.enabled},
-                "outcome": {"enabled": self._cfg.sensors.outcome.enabled},
-            },
         }
 
     # -----------------------------------------------------------------

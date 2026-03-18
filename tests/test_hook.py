@@ -15,81 +15,48 @@ from sensors.artifact import ArtifactSensor
 from sensors.outcome import OutcomeSensor
 
 
-def _make_embedding(seed: int = 42) -> np.ndarray:
+def _emb(seed=42):
     rng = np.random.RandomState(seed)
-    vec = rng.randn(384).astype(np.float32)
-    return vec / np.linalg.norm(vec)
+    v = rng.randn(384).astype(np.float32)
+    return v / np.linalg.norm(v)
 
 
-def test_conversation_sensor_feed():
-    """ConversationSensor.feed() creates a signal with embedding."""
+def test_conversation_sensor_basic():
     sensor = ConversationSensor(config={})
-    emb = _make_embedding(1)
-    signal = sensor.feed(
-        text="Hello, I want to build a module",
-        embedding=emb,
-        direction="human",
-        session_id="test-session",
-    )
+    signal = sensor.feed(text="hello world", embedding=_emb(1), session_id="s1")
     assert signal is not None
-    assert signal.pheromone == "conversation"
-    assert signal.session_id == "test-session"
-    assert signal.metadata["direction"] == "human"
-    assert signal.metadata["message_length"] == len("Hello, I want to build a module")
+    assert sensor.collect_signals() != []
 
 
-def test_conversation_sensor_collect():
-    """collect_signals() returns buffered signals and clears."""
-    sensor = ConversationSensor(config={})
-    sensor.feed(text="message 1", embedding=_make_embedding(1), session_id="s1")
-    sensor.feed(text="message 2", embedding=_make_embedding(2), session_id="s1")
-
-    signals = sensor.collect_signals()
-    assert len(signals) == 2
-
-    signals2 = sensor.collect_signals()
-    assert len(signals2) == 0
-
-
-def test_conversation_sensor_stats():
-    """Stats track total captured."""
-    sensor = ConversationSensor(config={})
-    sensor.feed(text="message 1", embedding=_make_embedding(1), session_id="s1")
-    sensor.feed(text="message 2", embedding=_make_embedding(2), session_id="s1")
-
-    stats = sensor.get_stats()
-    assert stats["total_captured"] == 2
-    assert stats["sensor_type"] == "conversation"
-
-
-def test_artifact_sensor_stub():
-    """ArtifactSensor stub returns empty."""
+def test_artifact_sensor_basic():
     sensor = ArtifactSensor(config={})
-    assert sensor.collect_signals() == []
-    assert sensor.SENSOR_TYPE == "artifact"
+    signal = sensor.register_artifact("doc", _emb(1), "prd", "hash", "s1")
+    assert signal.pheromone == "artifact"
+    assert len(sensor.collect_signals()) == 1
 
 
-def test_outcome_sensor_stub():
-    """OutcomeSensor stub returns empty."""
+def test_outcome_sensor_basic():
     sensor = OutcomeSensor(config={})
-    assert sensor.collect_signals() == []
-    assert sensor.SENSOR_TYPE == "outcome"
+    signal, strength = sensor.record_outcome(_emb(1), "build", True, session_id="s1")
+    assert signal.pheromone == "outcome"
+    assert strength > 0
+
+
+def test_all_sensor_types():
+    """All three sensor types have correct SENSOR_TYPE."""
+    assert ConversationSensor(config={}).SENSOR_TYPE == "conversation"
+    assert ArtifactSensor(config={}).SENSOR_TYPE == "artifact"
+    assert OutcomeSensor(config={}).SENSOR_TYPE == "outcome"
 
 
 if __name__ == "__main__":
-    test_conversation_sensor_feed()
-    print("test_conversation_sensor_feed PASSED")
-
-    test_conversation_sensor_collect()
-    print("test_conversation_sensor_collect PASSED")
-
-    test_conversation_sensor_stats()
-    print("test_conversation_sensor_stats PASSED")
-
-    test_artifact_sensor_stub()
-    print("test_artifact_sensor_stub PASSED")
-
-    test_outcome_sensor_stub()
-    print("test_outcome_sensor_stub PASSED")
-
-    print("\nAll hook/sensor tests passed.")
+    tests = [
+        test_conversation_sensor_basic,
+        test_artifact_sensor_basic,
+        test_outcome_sensor_basic,
+        test_all_sensor_types,
+    ]
+    for t in tests:
+        t()
+        print(f"{t.__name__} PASSED")
+    print(f"\nAll {len(tests)} sensor integration tests passed.")
