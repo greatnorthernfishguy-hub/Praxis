@@ -40,6 +40,13 @@ License: AGPL-3.0
 #         record_outcome(), (4) create temporal bindings by recording
 #         outcomes linking new signal to each recent signal.
 #         Temporal binding strength decays with age (newer = stronger).
+# [2026-03-18] Claude (Opus 4.6) — Phase 3: CPS integration.
+#   What: Initialize CPS in __init__. Store conversation entries in CPS
+#         on each on_message. Checkpoint CPS on save. Expose CPS stats.
+#   Why:  PRD §8 — CPS stores intent-behavior mappings. PRD §14 Phase 3.
+#   How:  CPS initialized with ecosystem ref for substrate-routed
+#         retrieval. Each captured conversation stores as INTENT entry.
+#         CPS saved alongside ecosystem on checkpoint.
 # -------------------
 """
 
@@ -101,6 +108,19 @@ class PraxisHook(OpenClawAdapter):
         }
         self._conv_sensor = ConversationSensor(config=conv_config)
         self._conv_sensor.set_log_path(self._data_dir / "conversation.jsonl")
+
+        # --- Initialize Context Persistence Store (PRD §8) ---
+        from store.cps import ContextPersistenceStore
+
+        cps_config = {
+            "max_entries": self._cfg.cps.max_entries,
+            "storage_path": self._cfg.cps.storage_path,
+        }
+        self._cps = ContextPersistenceStore(
+            config=cps_config,
+            data_dir=str(self._data_dir),
+            ecosystem=self._eco,
+        )
 
         # --- Session Tracking ---
         self._session_id = f"session_{int(time.time())}"
@@ -222,12 +242,32 @@ class PraxisHook(OpenClawAdapter):
         except Exception as exc:
             logger.debug("Substrate record failed: %s", exc)
 
-        # 3. Create temporal bindings to recent signals (PRD §6.4 step 2)
+        # 3. Store in CPS as INTENT entry (PRD §8)
+        cps_entry_id = None
+        try:
+            cps_entry = self._cps.store_from_signal(
+                content=text,
+                embedding=embedding,
+                entry_type="INTENT",
+                pheromone_source="conversation",
+                session_id=self._session_id,
+                layer_depth="implementation",
+                metadata={
+                    "turn_index": self._turn_index,
+                    "direction": "human",
+                    "signal_id": signal.signal_id,
+                },
+            )
+            cps_entry_id = cps_entry.entry_id
+        except Exception as exc:
+            logger.debug("CPS store failed: %s", exc)
+
+        # 4. Create temporal bindings to recent signals (PRD §6.4 step 2)
         bindings_created = self._bind_temporal(
             signal, embedding, signal_target_id
         )
 
-        # 4. Auto-checkpoint
+        # 5. Auto-checkpoint
         now = time.time()
         if now - self._last_checkpoint > self._checkpoint_interval:
             self._checkpoint()
@@ -236,10 +276,12 @@ class PraxisHook(OpenClawAdapter):
         return {
             "status": "captured",
             "signal_id": signal.signal_id,
+            "cps_entry_id": cps_entry_id,
             "pheromone": "conversation",
             "turn_index": self._turn_index,
             "temporal_bindings": bindings_created,
             "temporal_window_size": len(self._conv_sensor._recent),
+            "cps_entries": self._cps.count,
             "autonomic_state": self._autonomic_state,
             "total_signals": self._signal_count,
         }
@@ -310,6 +352,7 @@ class PraxisHook(OpenClawAdapter):
             "signal_count": self._signal_count,
             "autonomic_state": self._autonomic_state,
             "conversation_sensor": self._conv_sensor.get_stats(),
+            "cps": self._cps.get_stats(),
             "sensors": {
                 "conversation": {"enabled": self._cfg.sensors.conversation.enabled},
                 "artifact": {"enabled": self._cfg.sensors.artifact.enabled},
@@ -330,6 +373,7 @@ class PraxisHook(OpenClawAdapter):
             "tier_name": self._eco.tier_name,
             "session_id": self._session_id,
             "signal_count": self._signal_count,
+            "cps_entries": self._cps.count,
             "conversation_window": len(self._conv_sensor._recent),
             "autonomic_state": self._autonomic_state,
             "uptime_seconds": round(time.time() - self._start_time, 1),
@@ -353,11 +397,15 @@ class PraxisHook(OpenClawAdapter):
     # -----------------------------------------------------------------
 
     def _checkpoint(self) -> None:
-        """Save ecosystem state."""
+        """Save ecosystem and CPS state."""
         try:
             self._eco.save()
         except Exception as exc:
             logger.debug("Ecosystem checkpoint failed: %s", exc)
+        try:
+            self._cps.save()
+        except Exception as exc:
+            logger.debug("CPS checkpoint failed: %s", exc)
 
     # -----------------------------------------------------------------
     # Shutdown
