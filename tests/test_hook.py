@@ -1,4 +1,4 @@
-"""Tests for Praxis sensor base and conversation sensor."""
+"""Tests for Praxis sensors — base class and all three pheromones."""
 
 import sys
 import os
@@ -9,19 +9,29 @@ for p in [repo_root, vendored]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import numpy as np
 from sensors.conversation import ConversationSensor
 from sensors.artifact import ArtifactSensor
 from sensors.outcome import OutcomeSensor
 
 
+def _make_embedding(seed: int = 42) -> np.ndarray:
+    rng = np.random.RandomState(seed)
+    vec = rng.randn(384).astype(np.float32)
+    return vec / np.linalg.norm(vec)
+
+
 def test_conversation_sensor_feed():
-    """ConversationSensor.feed() creates a signal."""
+    """ConversationSensor.feed() creates a signal with embedding."""
     sensor = ConversationSensor(config={})
+    emb = _make_embedding(1)
     signal = sensor.feed(
         text="Hello, I want to build a module",
+        embedding=emb,
         direction="human",
         session_id="test-session",
     )
+    assert signal is not None
     assert signal.pheromone == "conversation"
     assert signal.session_id == "test-session"
     assert signal.metadata["direction"] == "human"
@@ -31,13 +41,12 @@ def test_conversation_sensor_feed():
 def test_conversation_sensor_collect():
     """collect_signals() returns buffered signals and clears."""
     sensor = ConversationSensor(config={})
-    sensor.feed(text="message 1", session_id="s1")
-    sensor.feed(text="message 2", session_id="s1")
+    sensor.feed(text="message 1", embedding=_make_embedding(1), session_id="s1")
+    sensor.feed(text="message 2", embedding=_make_embedding(2), session_id="s1")
 
     signals = sensor.collect_signals()
     assert len(signals) == 2
 
-    # Buffer should be empty after collect
     signals2 = sensor.collect_signals()
     assert len(signals2) == 0
 
@@ -45,8 +54,8 @@ def test_conversation_sensor_collect():
 def test_conversation_sensor_stats():
     """Stats track total captured."""
     sensor = ConversationSensor(config={})
-    sensor.feed(text="message 1", session_id="s1")
-    sensor.feed(text="message 2", session_id="s1")
+    sensor.feed(text="message 1", embedding=_make_embedding(1), session_id="s1")
+    sensor.feed(text="message 2", embedding=_make_embedding(2), session_id="s1")
 
     stats = sensor.get_stats()
     assert stats["total_captured"] == 2
