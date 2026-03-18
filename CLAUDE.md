@@ -45,7 +45,11 @@ Praxis (formerly The Creation Engine / TCE) is the sensory integration cortex of
 │   ├── ng_ecosystem.py
 │   ├── openclaw_adapter.py
 │   └── ng_autonomic.py
-├── tests/                         # Test suite (79 tests)
+├── et_modules/                    # ET Module Manager (copied from canonical)
+│   ├── __init__.py
+│   └── manager.py
+├── install.sh                     # Installer — registers with ET Module Manager
+├── tests/                         # Test suite (78 tests)
 │   ├── test_config.py
 │   ├── test_signals.py
 │   ├── test_hook.py

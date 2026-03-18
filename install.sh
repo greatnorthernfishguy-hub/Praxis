@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Praxis Installer — E-T Systems Standard Pattern
+# Creates directory structure, registers with ET Module Manager,
+# and verifies vendored files.  Follows Immunis install.sh pattern.
+set -euo pipefail
+
+MODULE_ID="praxis"
+ET_ROOT="$HOME/.et_modules"
+MODULE_DIR="$ET_ROOT/$MODULE_ID"
+INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "=== Praxis Installer ==="
+echo "Install directory: $INSTALL_DIR"
+echo ""
+
+# 1. Create directory structure
+echo "[1/5] Creating directory structure..."
+mkdir -p "$MODULE_DIR"
+mkdir -p "$ET_ROOT/shared_learning"
+
+# 2. Create default config.yaml if not present
+echo "[2/5] Checking configuration..."
+if [ ! -f "$MODULE_DIR/config.yaml" ]; then
+    cp "$INSTALL_DIR/config.yaml" "$MODULE_DIR/config.yaml"
+    echo "  Created default config.yaml"
+else
+    echo "  config.yaml already exists — keeping existing"
+fi
+
+# 3. Register with ET Module Manager
+echo "[3/5] Registering with ET Module Manager..."
+python3 -c "
+import sys, json
+sys.path.insert(0, '$INSTALL_DIR')
+from et_modules.manager import ETModuleManager, ModuleManifest
+
+manifest = ModuleManifest.from_file('$INSTALL_DIR/et_module.json')
+if manifest:
+    manifest.install_path = '$INSTALL_DIR'
+    manager = ETModuleManager()
+    manager.register(manifest)
+    print(f'  Registered: {manifest.module_id} v{manifest.version}')
+else:
+    print('  WARNING: Could not load et_module.json')
+" 2>/dev/null || echo "  Standalone mode (ET Module Manager unavailable)"
+
+# 4. Create autonomic state file if not present
+echo "[4/5] Checking autonomic state..."
+AUTONOMIC="$ET_ROOT/autonomic_state.json"
+if [ ! -f "$AUTONOMIC" ]; then
+    python3 -c "
+import json, time
+state = {
+    'state': 'PARASYMPATHETIC',
+    'threat_level': 'none',
+    'triggered_by': '',
+    'timestamp': time.time(),
+    'reason': 'default — initial installation',
+}
+with open('$AUTONOMIC', 'w') as f:
+    json.dump(state, f, indent=2)
+print('  Created autonomic_state.json')
+"
+else
+    echo "  autonomic_state.json already exists — keeping existing"
+fi
+
+# 5. Verify vendored files
+echo "[5/5] Verifying vendored files..."
+VENDORED_FILES=("ng_lite.py" "ng_peer_bridge.py" "ng_ecosystem.py" "openclaw_adapter.py" "ng_autonomic.py")
+ALL_PRESENT=true
+for f in "${VENDORED_FILES[@]}"; do
+    if [ -f "$INSTALL_DIR/vendored/$f" ]; then
+        echo "  ✓ $f"
+    else
+        echo "  ✗ $f — MISSING"
+        ALL_PRESENT=false
+    fi
+done
+
+echo ""
+echo "=== Installation Summary ==="
+echo "Module ID:     $MODULE_ID"
+echo "Install path:  $INSTALL_DIR"
+echo "Data path:     $MODULE_DIR"
+echo "Registry:      $ET_ROOT/registry.json"
+if [ "$ALL_PRESENT" = true ]; then
+    echo "Vendored files: All present"
+else
+    echo "Vendored files: INCOMPLETE — some files missing"
+fi
+echo ""
+echo "Verify installation:"
+echo "  cd $INSTALL_DIR && python3 main.py"
