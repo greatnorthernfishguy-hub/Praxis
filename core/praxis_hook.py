@@ -22,6 +22,13 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-03-19] Claude Code (Opus 4.6) — Migrate to BAAI/bge-base-en-v1.5 (#45)
+# What: fastembed model all-MiniLM-L6-v2 → BAAI/bge-base-en-v1.5 (768-dim).
+#   Removed sentence-transformers fallback entirely — fastembed → hash only.
+# Why: Ecosystem-wide embedding migration. sentence-transformers broke and
+#   caused the cascade that led to 384-dim contamination. Punchlist #45.
+# How: TextEmbedding() model string, removed ST fallback block, updated docstring.
+# -------------------
 # [2026-03-18] Claude (Opus 4.6) — Initial creation (Phase 1).
 #   What: PraxisHook class subclassing OpenClawAdapter. Initializes
 #         config, embedding, autonomic state reader, signal capture.
@@ -192,34 +199,15 @@ class PraxisHook(OpenClawAdapter):
     # -----------------------------------------------------------------
 
     def _embed(self, text: str) -> np.ndarray:
-        """Embed text using fastembed/sentence-transformers, fall back to hash.
+        """Embed text via ng_embed (centralized ecosystem embedding).
 
-        PRD §6.3: Ecosystem-standard all-MiniLM-L6-v2, 384 dimensions.
+        Ecosystem standard: Snowflake/snowflake-arctic-embed-m-v1.5 (768-dim).
+        ONNX Runtime, no torch dependency. L2-normalized for Praxis.
         """
         if self._cfg.embedding.device != "disabled":
-            # Try fastembed first (ONNX Runtime — no torch dependency)
             try:
-                if not hasattr(self, "_fe_model"):
-                    from fastembed import TextEmbedding
-                    self._fe_model = TextEmbedding(
-                        model_name="sentence-transformers/all-MiniLM-L6-v2"
-                    )
-                embeddings = list(self._fe_model.embed([text]))
-                vec = np.array(embeddings[0], dtype=np.float32)
-                norm = np.linalg.norm(vec)
-                return vec / norm if norm > 0 else vec
-            except Exception:
-                pass
-
-            # Fallback: sentence-transformers
-            try:
-                if not hasattr(self, "_st_model"):
-                    from sentence_transformers import SentenceTransformer
-                    self._st_model = SentenceTransformer(
-                        self._cfg.embedding.model
-                    )
-                vec = self._st_model.encode(text, normalize_embeddings=True)
-                return np.array(vec, dtype=np.float32)
+                from ng_embed import embed
+                return embed(text, normalize=True)
             except Exception:
                 pass
 
@@ -281,10 +269,12 @@ class PraxisHook(OpenClawAdapter):
 
         signal_target_id = f"conv:{signal.signal_id}"
 
-        # 2. Record to substrate — raw embedding, no classification (Law 7)
+        # 2. Dual-pass record: forest + tree concepts (Punchlist #81)
+        #    Raw embedding, no classification (Law 7)
         try:
-            self._eco.record_outcome(
-                embedding,
+            self._eco.dual_record_outcome(
+                content=text,
+                embedding=embedding,
                 target_id=signal_target_id,
                 success=True,
                 metadata={
