@@ -110,15 +110,16 @@ All sensors extend `sensors/base.py` (SensorBase ABC).
 
 ## 4. Vendored Files
 
-All five vendored files in `vendored/` directory, synced from NeuroGraph canonical on 2026-03-18:
+Vendored files in `vendored/` directory, synced from NeuroGraph canonical:
 
-| File | Purpose |
-|------|---------|
-| `ng_lite.py` | Tier 1 learning substrate |
-| `ng_peer_bridge.py` | Tier 2 cross-module learning |
-| `ng_ecosystem.py` | Tier management lifecycle |
-| `ng_autonomic.py` | Autonomic state (**Praxis is read-only**) |
-| `openclaw_adapter.py` | OpenClaw skill base class |
+| File | Purpose | Last Synced |
+|------|---------|-------------|
+| `ng_lite.py` | Tier 1 learning substrate | 2026-03-18 |
+| `ng_peer_bridge.py` | Tier 2 cross-module learning | 2026-03-18 |
+| `ng_ecosystem.py` | Tier management lifecycle + `dual_record_outcome()` | 2026-03-22 |
+| `ng_autonomic.py` | Autonomic state (**Praxis is read-only**) | 2026-03-18 |
+| `openclaw_adapter.py` | OpenClaw skill base class | 2026-03-18 |
+| `ng_embed.py` | Centralized embedding (Snowflake 768-dim) + dual-pass | 2026-03-22 |
 
 ---
 
