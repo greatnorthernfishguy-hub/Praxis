@@ -131,6 +131,9 @@ class ContextPersistenceStore:
         self._eco = ecosystem
 
         self._max_entries = self._config.get("max_entries", 50000)
+        self._sim_weight = self._config.get("search_weight_similarity", 0.7)
+        self._recency_weight = self._config.get("search_weight_recency", 0.3)
+        self._eviction_divisor = self._config.get("eviction_batch_divisor", 20)
         self._storage_path = self._config.get(
             "storage_path",
             "~/.et_modules/praxis/cps.msgpack",
@@ -352,7 +355,7 @@ class ContextPersistenceStore:
             # Weight by recency
             age_days = (time.time() - entry.timestamp) / 86400.0
             recency = 1.0 / (1.0 + age_days)
-            score = sim * 0.7 + recency * 0.3
+            score = sim * self._sim_weight + recency * self._recency_weight
 
             entry.access_count += 1
             entry.last_accessed = time.time()
@@ -496,7 +499,7 @@ class ContextPersistenceStore:
         if len(self._entries) < self._max_entries:
             return
 
-        evict_count = max(1, self._max_entries // 20)  # 5% at a time
+        evict_count = max(1, self._max_entries // self._eviction_divisor)
         sorted_entries = sorted(
             self._entries.values(), key=lambda e: e.last_accessed
         )

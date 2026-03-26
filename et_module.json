@@ -1,32 +1,14 @@
 {
-  "_schema": "et_module/2.0",
   "module_id": "praxis",
   "display_name": "Praxis",
   "version": "0.8.0",
   "description": "Stigmergic intent-to-action substrate. Captures conversation, artifact, and outcome signals into NG-Lite. Bridges knowing and doing.",
+  "install_path": "/home/josh/Praxis",
   "git_remote": "https://github.com/greatnorthernfishguy-hub/Praxis.git",
   "git_branch": "main",
   "entry_point": "main.py",
-  "install_path": "",
-  "service_name": "",
-  "api_port": 0,
-  "ecosystem": {
-    "ng_lite": true,
-    "ng_lite_version": "1.0.0",
-    "peer_bridge": true,
-    "tier3_upgrade": true,
-    "ng_ecosystem_version": "1.0.0",
-    "openclaw_adapter": "core/praxis_hook.py",
-    "openclaw_skill_name": "praxis",
-    "shared_learning_writes": true,
-    "capabilities": [
-      "context_intelligence",
-      "intent_tracking",
-      "session_continuity",
-      "artifact_management",
-      "outcome_learning"
-    ]
-  },
+  "ng_lite_version": "",
   "dependencies": [],
-  "provides": []
+  "service_name": "",
+  "api_port": 0
 }

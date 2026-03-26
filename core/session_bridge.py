@@ -83,6 +83,10 @@ class SessionBridge:
         self._auto_summary = config.get("auto_generate_summary", True)
         self._max_summary_tokens = config.get("summary_max_tokens", 500)
         self._format = config.get("context_injection_format", "markdown")
+        # SVG Phase 3
+        self._token_char_ratio = config.get("token_char_ratio", 4)
+        self._usage_threshold = config.get("usage_detection_threshold", 0.65)
+        self._usage_reward = config.get("usage_reward_strength", 0.8)
 
         # Track what was surfaced for outcome feedback
         self._last_surfaced: List[Dict[str, Any]] = []
@@ -219,7 +223,7 @@ class SessionBridge:
         header = f"Session {session_id}: {len(entries)} entries ({type_summary})"
 
         # Limit parts to fit token budget (rough: 4 chars ≈ 1 token)
-        char_budget = self._max_summary_tokens * 4
+        char_budget = self._max_summary_tokens * self._token_char_ratio
         summary_parts = [header]
         chars_used = len(header)
         for part in parts:
@@ -280,7 +284,7 @@ class SessionBridge:
             return []
 
         used_ids: List[str] = []
-        usage_threshold = 0.65  # Cosine similarity threshold
+        usage_threshold = self._usage_threshold
 
         for item in self._last_surfaced:
             entry = self._cps.get_entry(item["entry_id"])
@@ -298,7 +302,7 @@ class SessionBridge:
                             entry.embedding,
                             target_id=entry.substrate_target_id,
                             success=True,
-                            strength=0.8,
+                            strength=self._usage_reward,
                             metadata={
                                 "source": "praxis_session_bridge",
                                 "feedback_type": "surfaced_context_used",

@@ -114,17 +114,6 @@ Date: February 2026
 #   Birth/death lifecycle deferred to Elmer. Serialized with state for
 #   persistence. Old state files load cleanly (no receptor_layer key = skip).
 # -------------------
-# [2026-03-24] Claude (Opus 4.6) — Welford's online variance (punchlist #51)
-# What: Three fields on NGLiteSynapse (welford_count, welford_mean, welford_m2)
-#   plus variance property and is_contested property.  record_outcome()
-#   tracks weight delta variance on every update.
-# Why: Distinguish "untested neutral" (w=0.5, var=0) from "contested neutral"
-#   (w=0.5, var=high).  The immune system signal for Elmer and extraction
-#   buckets (#29).  Enables contested-synapse detection and exploration.
-# How: Welford's algorithm on weight deltas.  Additive — no change to
-#   weight calculation or learning dynamics.  Backward-compatible: old
-#   state files load with defaults (0, 0.0, 0.0).
-# -------------------
 # [2026-03-13] Claude Code — Persist node embeddings across restarts
 # What: Store embedding vector on NGLiteNode, serialize/deserialize with
 #   state, rebuild _embedding_cache from persisted nodes on load().
@@ -259,15 +248,6 @@ class NGLiteSynapse:
         failure_count: Times this connection led to a failed outcome.
         last_updated: Unix timestamp of most recent weight update.
         metadata: Application-specific data.
-        welford_count: Welford's online variance — observation count.
-        welford_mean: Welford's online variance — running mean of weight deltas.
-        welford_m2: Welford's online variance — sum of squared differences.
-            Variance = welford_m2 / welford_count (when count > 1).
-            High variance + weight near 0.5 = "contested neutral" — lots of
-            evidence but it disagrees.  Low variance + weight near 0.5 =
-            "untested neutral" — not enough data to have an opinion.
-            This is the immune system signal (#51) that Elmer uses to detect
-            contested synapses and trigger exploration.
     """
 
     source_id: str = ""
@@ -278,34 +258,6 @@ class NGLiteSynapse:
     failure_count: int = 0
     last_updated: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
-    welford_count: int = 0
-    welford_mean: float = 0.0
-    welford_m2: float = 0.0
-
-    @property
-    def variance(self) -> float:
-        """Weight delta variance (Welford's online algorithm).
-
-        Returns 0.0 if fewer than 2 observations.  High variance means
-        the synapse is contested — outcomes disagree about this connection.
-        """
-        if self.welford_count < 2:
-            return 0.0
-        return self.welford_m2 / self.welford_count
-
-    @property
-    def is_contested(self) -> bool:
-        """True if the synapse has high variance relative to pure-outcome synapses.
-
-        A contested synapse has seen significant evidence but the evidence
-        disagrees.  This is qualitatively different from an untested synapse
-        (also near 0.5 weight, but zero variance).
-
-        Threshold: 0.002 separates contested (~0.008) from pure (~0.0001)
-        by an order of magnitude.  Weight range 0.15-0.85 captures the
-        zone where the synapse hasn't decisively committed either direction.
-        """
-        return self.variance > 0.002 and 0.15 <= self.weight <= 0.85
 
 
 # ---------------------------------------------------------------------------
@@ -660,15 +612,6 @@ class NGLite:
         synapse.weight = float(np.clip(synapse.weight, 0.0, 1.0))
         synapse.last_updated = time.time()
 
-        # Welford's online variance (#51) — track weight delta variance.
-        # High variance = contested synapse (outcomes disagree).
-        # The immune system signal for Elmer and extraction buckets.
-        synapse.welford_count += 1
-        w_delta = delta if success else -delta
-        old_mean = synapse.welford_mean
-        synapse.welford_mean += (w_delta - old_mean) / synapse.welford_count
-        synapse.welford_m2 += (w_delta - old_mean) * (w_delta - synapse.welford_mean)
-
         # Accumulate strength experience on synapse —
         # the topology remembers how intensely it was taught
         synapse.metadata["strength_sum"] = synapse.metadata.get("strength_sum", 0.0) + strength
@@ -686,8 +629,6 @@ class NGLite:
             "success": success,
             "weight_after": synapse.weight,
             "activation_count": synapse.activation_count,
-            "variance": synapse.variance,
-            "contested": synapse.is_contested,
         }
 
         # Record in history

@@ -9,6 +9,11 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-03-19] Claude Code (Opus 4.6) — Migrate to BAAI/bge-base-en-v1.5 (#45)
+# What: CPSConfig and EmbeddingConfig defaults → BAAI/bge-base-en-v1.5, dim → 768.
+# Why: Ecosystem-wide embedding migration. Punchlist #45.
+# How: Model string and dim default changes in two dataclasses.
+# -------------------
 # [2026-03-18] Claude (Opus 4.6) — Initial creation (Phase 1).
 #   What: PraxisConfig dataclass with from_yaml() class method.
 #         All default values match PRD §13 exactly.
@@ -40,6 +45,7 @@ class ConversationSensorConfig:
     temporal_window_seconds: float = 300.0    # Link signals within 5 minutes
     capture_both_directions: bool = True       # Capture human AND AI messages
     min_message_length: int = 10               # Ignore very short messages
+    min_temporal_strength: float = 0.1        # SVG Phase 3: floor for temporal binding
 
 
 @dataclass
@@ -79,8 +85,12 @@ class SensorsConfig:
 class CPSConfig:
     storage_path: str = "~/.et_modules/praxis/cps.msgpack"
     max_entries: int = 50000
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_dim: int = 384
+    embedding_model: str = "BAAI/bge-base-en-v1.5"
+    embedding_dim: int = 768
+    # SVG Phase 3 — substrate's concern
+    search_weight_similarity: float = 0.7  # Cosine similarity blend weight
+    search_weight_recency: float = 0.3     # Recency blend weight
+    eviction_batch_divisor: int = 20       # Evict 1/N of max_entries per batch
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +113,10 @@ class SessionBridgeConfig:
     auto_generate_summary: bool = True
     summary_max_tokens: int = 500
     context_injection_format: str = "markdown"  # markdown | json | plain
+    # SVG Phase 3 — substrate's concern
+    token_char_ratio: int = 4              # Approximation: 1 token ≈ N chars
+    usage_detection_threshold: float = 0.65  # Cosine similarity to detect context usage
+    usage_reward_strength: float = 0.8     # Reward for surfaced context that was used
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +148,8 @@ class NGLiteConfig:
 
 @dataclass
 class EmbeddingConfig:
-    model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    dim: int = 384
+    model: str = "BAAI/bge-base-en-v1.5"
+    dim: int = 768
     device: str = "auto"
     fallback_to_hash: bool = True
 
