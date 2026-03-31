@@ -22,6 +22,16 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-03-28] Claude Code (Opus 4.6) — #109 Pulse loop: drain outcomes between conversations
+#   What: Added _pulse_loop() daemon thread following the Tonic pattern.
+#   Why:  #109 — organs must run continuously. Praxis needs to absorb outcome
+#         and artifact signals from peer modules via the River between
+#         conversations, not only during fan-out messages.
+#   How:  _shutdown_event + _in_conversation flag. Daemon thread drains
+#         River tracts via _eco._peer_bridge.drain(), feeds absorbed events
+#         to outcome sensor or artifact sensor based on metadata. Resting 60s /
+#         conversation 10s intervals. on_conversation_started/ended swap
+#         intervals. Does not touch _module_on_message.
 # [2026-03-19] Claude Code (Opus 4.6) — Migrate to BAAI/bge-base-en-v1.5 (#45)
 # What: fastembed model all-MiniLM-L6-v2 → BAAI/bge-base-en-v1.5 (768-dim).
 #   Removed sentence-transformers fallback entirely — fastembed → hash only.
@@ -66,6 +76,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -187,12 +198,139 @@ class PraxisHook(OpenClawAdapter):
         self._last_checkpoint = time.time()
         self._checkpoint_interval = self._cfg.checkpoint_interval_seconds
 
+        # --- #109 Pulse loop infrastructure ---
+        self._shutdown_event = threading.Event()
+        self._in_conversation = False
+        self._resting_interval = 60.0
+        self._conversation_interval = 10.0
+
+        self._pulse_thread = threading.Thread(
+            target=self._pulse_loop, name="praxis-pulse", daemon=True
+        )
+        self._pulse_thread.start()
+
         logger.info(
-            "[Praxis] Initialized — session=%s, autonomic=%s, tier=%d",
+            "[Praxis] Initialized — session=%s, autonomic=%s, tier=%d, pulse=%.0fs/%.0fs",
             self._session_id,
             self._autonomic_state,
             self._eco.tier,
+            self._resting_interval,
+            self._conversation_interval,
         )
+
+    # -----------------------------------------------------------------
+    # #109 Pulse loop — drain outcomes between conversations
+    # -----------------------------------------------------------------
+
+    def _pulse_loop(self):
+        """Continuous outcome absorption — Praxis alive between conversations.
+
+        Follows the Tonic pattern: daemon thread with shutdown event wait.
+        Each cycle drains River tracts for outcome/artifact signals from
+        peer modules and feeds them to the appropriate sensors.
+        """
+        while not self._shutdown_event.is_set():
+            try:
+                self._pulse_cycle()
+            except Exception as exc:
+                logger.debug("Pulse cycle error: %s", exc)
+            interval = (
+                self._conversation_interval
+                if self._in_conversation
+                else self._resting_interval
+            )
+            self._shutdown_event.wait(timeout=interval)
+
+    def _pulse_cycle(self):
+        """One pulse cycle — drain River tracts, feed to sensors."""
+        # 1. Drain tracts from peer bridge
+        try:
+            bridge = getattr(self._eco, '_peer_bridge', None)
+            if bridge and hasattr(bridge, 'drain'):
+                events = bridge.drain()
+                if events:
+                    for event in events:
+                        self._route_pulse_event(event)
+        except Exception as exc:
+            logger.debug("Pulse drain error: %s", exc)
+
+        # 2. Read autonomic state
+        self._read_autonomic()
+
+    def _route_pulse_event(self, event):
+        """Route a drained River event to the appropriate sensor.
+
+        Outcome events go to the outcome sensor. Artifact events go to
+        the artifact sensor. Everything else is recorded as raw experience
+        on the substrate (Law 7).
+        """
+        if not isinstance(event, dict):
+            return
+
+        metadata = event.get('metadata', {})
+        pheromone = metadata.get('pheromone', '')
+        embedding = event.get('embedding')
+
+        # Need an embedding to do anything useful
+        if embedding is None:
+            return
+
+        try:
+            embedding = np.asarray(embedding, dtype=np.float32)
+        except Exception:
+            return
+
+        if pheromone == 'outcome':
+            # Feed to outcome sensor
+            try:
+                self._out_sensor.record_outcome(
+                    embedding=embedding,
+                    outcome_type=metadata.get('outcome_type', 'unknown'),
+                    success=metadata.get('success', True),
+                    severity=metadata.get('severity', 0.5),
+                    session_id=self._session_id,
+                    layer_depth=metadata.get('layer_depth', 'implementation'),
+                    metadata={'source': 'river_pulse'},
+                )
+            except Exception as exc:
+                logger.debug("Pulse outcome sensor error: %s", exc)
+
+        elif pheromone == 'artifact':
+            # Feed to artifact sensor
+            try:
+                artifact_id = metadata.get('artifact_id', 'unknown')
+                event_type = metadata.get('event_type', 'reference')
+                self._art_sensor.record_reference(
+                    artifact_id, embedding, self._session_id,
+                    metadata.get('layer_depth', 'implementation'),
+                )
+            except Exception as exc:
+                logger.debug("Pulse artifact sensor error: %s", exc)
+
+        else:
+            # Raw experience to substrate (Law 7)
+            try:
+                target_id = metadata.get('target_id', f"pulse:{time.time():.0f}")
+                self._eco.record_outcome(
+                    embedding,
+                    target_id=target_id,
+                    success=True,
+                    metadata={'source': 'river_pulse', 'pheromone': pheromone},
+                )
+            except Exception as exc:
+                logger.debug("Pulse substrate record error: %s", exc)
+
+    def on_conversation_started(self):
+        """Mode swap: faster pulse during active conversation."""
+        self._in_conversation = True
+        logger.debug("[Praxis] conversation started — pulse interval %.0fs",
+                      self._conversation_interval)
+
+    def on_conversation_ended(self):
+        """Mode swap: slower pulse between conversations."""
+        self._in_conversation = False
+        logger.debug("[Praxis] conversation ended — pulse interval %.0fs",
+                      self._resting_interval)
 
     # -----------------------------------------------------------------
     # OpenClawAdapter implementation
@@ -669,7 +807,8 @@ class PraxisHook(OpenClawAdapter):
     # -----------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Graceful shutdown — end session, checkpoint."""
+        """Graceful shutdown — stop pulse, end session, checkpoint."""
+        self._shutdown_event.set()
         self.end_session()
         self._conv_sensor.shutdown()
         logger.info("[Praxis] Shutdown complete")
