@@ -298,7 +298,7 @@ class SessionBridge:
                 # Record positive outcome to substrate
                 if self._eco is not None:
                     try:
-                        self._eco.record_outcome(
+                        if self._eco: self._eco.record_outcome(
                             entry.embedding,
                             target_id=entry.substrate_target_id,
                             success=True,

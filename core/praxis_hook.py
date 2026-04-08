@@ -92,6 +92,7 @@ class PraxisHook(OpenClawAdapter):
     """OpenClaw integration hook for Praxis."""
 
     MODULE_ID = "praxis"
+    SKIP_ECOSYSTEM = True
     SKILL_NAME = "Praxis Context Intelligence"
     WORKSPACE_ENV = "PRAXIS_WORKSPACE_DIR"
     DEFAULT_WORKSPACE = "~/.openclaw/praxis"
@@ -213,7 +214,7 @@ class PraxisHook(OpenClawAdapter):
             "[Praxis] Initialized — session=%s, autonomic=%s, tier=%d, pulse=%.0fs/%.0fs",
             self._session_id,
             self._autonomic_state,
-            self._eco.tier,
+            self._eco.tier if self._eco else 0,
             self._resting_interval,
             self._conversation_interval,
         )
@@ -307,18 +308,98 @@ class PraxisHook(OpenClawAdapter):
             except Exception as exc:
                 logger.debug("Pulse artifact sensor error: %s", exc)
 
+        elif event.get('type') == 'topology_delta' and event.get('conversation'):
+            # Conversation content from the central substrate
+            try:
+                self._ingest_conversation(event['conversation'], embedding)
+            except Exception as exc:
+                logger.debug("Pulse conversation ingest error: %s", exc)
+
         else:
             # Raw experience to substrate (Law 7)
             try:
                 target_id = metadata.get('target_id', f"pulse:{time.time():.0f}")
-                self._eco.record_outcome(
-                    embedding,
-                    target_id=target_id,
-                    success=True,
-                    metadata={'source': 'river_pulse', 'pheromone': pheromone},
-                )
+                if self._eco:
+                    if self._eco: self._eco.record_outcome(
+                        embedding,
+                        target_id=target_id,
+                        success=True,
+                        metadata={'source': 'river_pulse', 'pheromone': pheromone},
+                    )
             except Exception as exc:
                 logger.debug("Pulse substrate record error: %s", exc)
+
+    def _ingest_conversation(self, conversation: dict, embedding: np.ndarray) -> None:
+        """Process conversation content from a topology delta.
+
+        Same flow as the old _module_on_message but triggered by River
+        tract drain instead of fan-out push.
+        """
+        text = conversation.get('text', '')
+        conv_emb = conversation.get('embedding')
+        if conv_emb is not None:
+            embedding = np.asarray(conv_emb, dtype=np.float32)
+
+        if not text or len(text) < self._cfg.sensors.conversation.min_message_length:
+            return
+
+        self._turn_index += 1
+        self._signal_count += 1
+
+        # Feed to ConversationSensor
+        signal = self._conv_sensor.feed(
+            text=text,
+            embedding=embedding,
+            direction="human",
+            session_id=self._session_id,
+            modality="text",
+            layer_depth="implementation",
+        )
+        if signal is None:
+            return
+
+        signal_target_id = f"conv:{signal.signal_id}"
+
+        # Dual-pass record to local substrate
+        if self._eco:
+            try:
+                if self._eco: self._eco.dual_record_outcome(
+                    content=text,
+                    embedding=embedding,
+                    target_id=signal_target_id,
+                    success=True,
+                    metadata={
+                        "source": "praxis",
+                        "pheromone": "conversation",
+                        "session_id": self._session_id,
+                        "turn_index": self._turn_index,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Substrate record failed: %s", exc)
+
+        # Store in CPS
+        try:
+            self._cps.store_from_signal(
+                content=text,
+                embedding=embedding,
+                entry_type="INTENT",
+                pheromone_source="conversation",
+                session_id=self._session_id,
+                layer_depth="implementation",
+                metadata={"turn_index": self._turn_index, "signal_id": signal.signal_id},
+            )
+        except Exception as exc:
+            logger.debug("CPS store failed: %s", exc)
+
+        # Temporal bindings
+        self._bind_temporal(signal, embedding, signal_target_id)
+
+        # Auto-checkpoint
+        now = time.time()
+        if now - self._last_checkpoint > self._checkpoint_interval:
+            self._checkpoint()
+            self._last_checkpoint = now
 
     def on_conversation_started(self):
         """Mode swap: faster pulse during active conversation."""
@@ -354,133 +435,13 @@ class PraxisHook(OpenClawAdapter):
     def _module_on_message(
         self, text: str, embedding: np.ndarray
     ) -> Dict[str, Any]:
-        """Praxis-specific processing on each OpenClaw message.
+        """No-op — conversation content arrives via topology delta in the River.
 
-        Signal-to-substrate flow (PRD §6.4):
-        1. On first message: surface prior context via Session Bridge
-        2. Feed text + embedding to ConversationSensor
-        3. Record the signal to the substrate (raw embedding — Law 7)
-        4. Store in CPS as INTENT entry
-        5. Create temporal synapses to recent signals within the window
-        6. Track usage of previously surfaced context
-        7. Auto-checkpoint
+        The central substrate deposits text+embedding in the topology delta
+        (version 2). Praxis pulse cycle extracts and processes it via
+        _route_pulse_event -> _ingest_conversation.
         """
-        self._turn_index += 1
-        self._signal_count += 1
-
-        # Read autonomic state (PRD §9)
-        self._read_autonomic()
-
-        # First message in session: surface prior context (PRD §8.4)
-        surfaced_context = None
-        if self._turn_index == 1 and self._cfg.surfacing.session_start_auto_surface:
-            items = self._bridge.surface_context(
-                initial_message=text,
-                embedding=embedding,
-                session_id=self._session_id,
-            )
-            if items:
-                surfaced_context = self._bridge.format_context(items)
-                self._session_context = surfaced_context
-
-        # Skip short messages unless SYMPATHETIC (capture everything)
-        if (
-            len(text) < self._cfg.sensors.conversation.min_message_length
-            and self._autonomic_state != "SYMPATHETIC"
-        ):
-            result: Dict[str, Any] = {"status": "skipped", "reason": "below_min_length"}
-            if surfaced_context:
-                result["surfaced_context"] = surfaced_context
-            return result
-
-        # 1. Feed to ConversationSensor — creates signal + adds to temporal window
-        signal = self._conv_sensor.feed(
-            text=text,
-            embedding=embedding,
-            direction="human",
-            session_id=self._session_id,
-            modality="text",
-            layer_depth="implementation",
-        )
-        if signal is None:
-            return {"status": "skipped", "reason": "sensor_filtered"}
-
-        signal_target_id = f"conv:{signal.signal_id}"
-
-        # 2. Dual-pass record: forest + tree concepts (Punchlist #81)
-        #    Raw embedding, no classification (Law 7)
-        try:
-            self._eco.dual_record_outcome(
-                content=text,
-                embedding=embedding,
-                target_id=signal_target_id,
-                success=True,
-                metadata={
-                    "source": "praxis",
-                    "pheromone": "conversation",
-                    "session_id": self._session_id,
-                    "turn_index": self._turn_index,
-                    "direction": "human",
-                },
-            )
-        except Exception as exc:
-            logger.debug("Substrate record failed: %s", exc)
-
-        # 3. Store in CPS as INTENT entry (PRD §8)
-        cps_entry_id = None
-        try:
-            cps_entry = self._cps.store_from_signal(
-                content=text,
-                embedding=embedding,
-                entry_type="INTENT",
-                pheromone_source="conversation",
-                session_id=self._session_id,
-                layer_depth="implementation",
-                metadata={
-                    "turn_index": self._turn_index,
-                    "direction": "human",
-                    "signal_id": signal.signal_id,
-                },
-            )
-            cps_entry_id = cps_entry.entry_id
-        except Exception as exc:
-            logger.debug("CPS store failed: %s", exc)
-
-        # 4. Create temporal bindings to recent signals (PRD §6.4 step 2)
-        bindings_created = self._bind_temporal(
-            signal, embedding, signal_target_id
-        )
-
-        # 5. Track usage of previously surfaced context (outcome feedback)
-        used_ids: List[str] = []
-        if self._turn_index > 1:
-            try:
-                used_ids = self._bridge.track_usage(text, embedding)
-            except Exception as exc:
-                logger.debug("Usage tracking failed: %s", exc)
-
-        # 6. Auto-checkpoint
-        now = time.time()
-        if now - self._last_checkpoint > self._checkpoint_interval:
-            self._checkpoint()
-            self._last_checkpoint = now
-
-        result = {
-            "status": "captured",
-            "signal_id": signal.signal_id,
-            "cps_entry_id": cps_entry_id,
-            "pheromone": "conversation",
-            "turn_index": self._turn_index,
-            "temporal_bindings": bindings_created,
-            "temporal_window_size": len(self._conv_sensor._recent),
-            "cps_entries": self._cps.count,
-            "context_used": used_ids,
-            "autonomic_state": self._autonomic_state,
-            "total_signals": self._signal_count,
-        }
-        if surfaced_context:
-            result["surfaced_context"] = surfaced_context
-        return result
+        return {}
 
     def _bind_temporal(
         self,
@@ -522,7 +483,7 @@ class PraxisHook(OpenClawAdapter):
 
             try:
                 # Forward binding: new signal → recent signal
-                self._eco.record_outcome(
+                if self._eco: self._eco.record_outcome(
                     embedding,
                     target_id=neighbor_target_id,
                     success=True,
@@ -586,7 +547,7 @@ class PraxisHook(OpenClawAdapter):
 
         # Record to substrate
         try:
-            self._eco.record_outcome(
+            if self._eco: self._eco.record_outcome(
                 embedding,
                 target_id=f"artifact:{artifact_id}",
                 success=True,
@@ -662,7 +623,7 @@ class PraxisHook(OpenClawAdapter):
 
         # Record to substrate with reward strength
         try:
-            self._eco.record_outcome(
+            if self._eco: self._eco.record_outcome(
                 embedding,
                 target_id=f"outcome:{signal.signal_id}",
                 success=success,
@@ -727,8 +688,8 @@ class PraxisHook(OpenClawAdapter):
         return {
             "module": "praxis",
             "status": "healthy",
-            "tier": self._eco.tier,
-            "tier_name": self._eco.tier_name,
+            "tier": self._eco.tier if self._eco else 0,
+            "tier_name": self._eco.tier_name if self._eco else "tract-only",
             "session_id": self._session_id,
             "signal_count": self._signal_count,
             "cps_entries": self._cps.count,
@@ -757,7 +718,7 @@ class PraxisHook(OpenClawAdapter):
     def _checkpoint(self) -> None:
         """Save ecosystem and CPS state."""
         try:
-            self._eco.save()
+            pass  # state via tracts
         except Exception as exc:
             logger.debug("Ecosystem checkpoint failed: %s", exc)
         try:
