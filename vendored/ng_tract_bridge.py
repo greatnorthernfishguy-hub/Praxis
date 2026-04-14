@@ -48,6 +48,24 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/NeuroGraph
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-13] Claude (Sonnet 4.6) — Fix #123: River absorption gap
+#   What: Added self._drain_all() at entry of get_recommendations() and
+#         detect_novelty() before operating on cached _peer_events.
+#   Why:  Modules with low outcome throughput (TrollGuard, QuantumGraph,
+#         Darwin, Immunis) never reached the record_outcome() drain gate
+#         (100 outcomes). 400-500MB of undrained JSONL accumulated.
+#         The organism heartbeat IS the drain trigger: any bridge query
+#         absorbs first. Not a timer, not a poll, not a counter.
+#   How:  Two _drain_all() insertions at canonical source, re-vendor to
+#         all 10 modules. QuantumGraph/Praxis/UniOS also gain the
+#         2026-04-13 metadata serialization fix as a side effect.
+# [2026-04-13] Claude (Opus 4.6) — Fix metadata serialization for Rust BTF
+#   What: Serialize metadata dict to msgpack bytes before passing to
+#         ng_tract.deposit_outcome(). Rust expects PyBytes, not dict.
+#   Why:  Every record_outcome() with metadata failed at the Python/Rust
+#         boundary: "'dict' object cannot be converted to 'PyBytes'".
+#         River deposits silently broken for all modules using tracts.
+#   How:  msgpack.packb(metadata) — binary dict, zero inflation.
 # [2026-04-04] Claude (Opus 4.6) — Punchlist #119 Step 6: Bucket extraction API
 #   What: Eliminated dict conversion on BTF drain; modules now receive typed
 #         entry objects (PyOutcomeEntry, PyTopologyEntry, PyExperienceEntry)
@@ -397,13 +415,22 @@ class NGTractBridge(NGBridge):
             str(self._module_dir / f"{peer_id}.tract")
             for peer_id in peers
         ]
+        # Rust expects metadata as PyBytes (msgpack binary dict), not raw dict
+        meta_bytes = None
+        if metadata is not None:
+            try:
+                import msgpack
+                meta_bytes = msgpack.packb(metadata)
+            except Exception:
+                meta_bytes = None
         ng_tract.deposit_outcome(
+            timestamp=time.time(),
             module_id=module_id,
             target_id=target_id,
             success=success,
             embedding=np.asarray(embedding, dtype=np.float32),
             tract_paths=tract_paths,
-            metadata=metadata,
+            metadata=meta_bytes,
         )
 
         # Drain check
@@ -437,6 +464,9 @@ class NGTractBridge(NGBridge):
         Searches cached peer events for similar embeddings and returns
         their targets as recommendations.
         """
+        # Absorb from River before querying -- ensures modules with low
+        # outcome throughput see current peer data, not a stale cache (#123)
+        self._drain_all()
         if not self._connected or not self._peer_events:
             return None
 
@@ -488,6 +518,8 @@ class NGTractBridge(NGBridge):
         Checks if this embedding is novel not just to this module,
         but to ALL peer modules on this host.
         """
+        # Absorb from River before querying (#123)
+        self._drain_all()
         if not self._connected or not self._peer_events:
             return None
 
@@ -858,6 +890,7 @@ class NGTractBridge(NGBridge):
                     emb = self._get_embedding(event)
                     if emb is not None:
                         ng_tract.deposit_outcome(
+                            timestamp=time.time(),
                             module_id=self._get_module_id(event) or self.module_id,
                             target_id=self._get_target_id(event) or "unknown",
                             success=event.get("success", True) if isinstance(event, dict) else getattr(event, "success", True),
