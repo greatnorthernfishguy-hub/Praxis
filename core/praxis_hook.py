@@ -69,6 +69,13 @@ License: AGPL-3.0
 #         result dict. Subsequent messages track_usage() against surfaced
 #         items. end_session() generates SESSION_SUMMARY. start_session()
 #         resets turn tracking.
+# [2026-04-15] Claude Code (Sonnet 4.6) — Punchlist #137: Fix bridge.drain() no-op
+#   What: Replace bridge.drain() with bridge.sync_state() in _pulse_cycle().
+#   Why:  NGTractBridge has no public drain() method. hasattr guard silently
+#         skipped the entire tract drain — pulse loop was a no-op for River.
+#   How:  sync_state(local_state={}, module_id=MODULE_ID) calls _drain_all()
+#         internally, clearing incoming tracts and updating bridge state.
+#         Event routing removed — Law 7 violation deferred to punchlist #154.
 # -------------------
 """
 
@@ -247,11 +254,8 @@ class PraxisHook(OpenClawAdapter):
         # 1. Drain tracts from peer bridge
         try:
             bridge = getattr(self._eco, '_peer_bridge', None)
-            if bridge and hasattr(bridge, 'drain'):
-                events = bridge.drain()
-                if events:
-                    for event in events:
-                        self._route_pulse_event(event)
+            if bridge and hasattr(bridge, 'sync_state'):
+                bridge.sync_state(local_state={}, module_id=self.MODULE_ID)
         except Exception as exc:
             logger.debug("Pulse drain error: %s", exc)
 
