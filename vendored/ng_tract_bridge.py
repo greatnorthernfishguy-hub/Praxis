@@ -48,6 +48,24 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/NeuroGraph
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-19] Claude Code (Sonnet 4.6) — Punchlist #155 test: stub bridge similarity methods
+#   What: get_recommendations() and detect_novelty() now return None immediately after
+#         _drain_all() instead of scanning _peer_events.
+#   Why:  _peer_events is an ever-growing in-memory list that shadows the substrate in
+#         ng_lite.py's fallback chain. Returning None forces the fallback to
+#         _core.get_recommendations() / _core.detect_novelty() (the Hebbian substrate)
+#         which does this job better and already contains peer experience via pulse loops.
+#         Test run before full _peer_events deletion.
+# -------------------
+# [2026-04-18] Claude Code (Sonnet 4.6) — Punchlist #155: Fix _peer_events_max drop-at-intake
+#   What: Raised _peer_events_max 500 —> 50_000. Extracted rolling-window eviction into
+#         _enforce_window_limit() and call it at end of _drain_all() instead of inline.
+#   Why:  500-item cap silently discarded the oldest River events on every drain cycle.
+#         With 8+ active modules depositing, 500 saturates in a single drain. Raw
+#         experience was being dropped at the intake layer — a Law 7 violation baked
+#         into the River infrastructure itself. Darwin uses 50k; same pattern adopted here.
+#   How:  _enforce_window_limit() trims accumulated buffer AFTER extending with new events.
+#         All events drained from disk are absorbed without cap. Re-vendor to all modules.
 # [2026-04-13] Claude (Sonnet 4.6) — Fix #123: River absorption gap
 #   What: Added self._drain_all() at entry of get_recommendations() and
 #         detect_novelty() before operating on cached _peer_events.
@@ -250,18 +268,31 @@ class MmapTract:
 
         return entries
 
-    def preload(self, events: List[Dict[str, Any]]) -> None:
+    def preload(self, events: List[Any]) -> None:
         """Preload events into the write buffer (used during upgrade)."""
         import ng_tract
         for event in events:
-            emb = event.get("embedding", [])
-            if emb:
+            if isinstance(event, dict):
+                emb = event.get("embedding", [])
+                ts  = event.get("timestamp", 0.0)
+                mid = event.get("module_id", "unknown")
+                tid = event.get("target_id", "unknown")
+                ok  = bool(event.get("success", False))
+            else:
+                # Typed BTF entry (PyOutcomeEntry) — use attribute access
+                emb = event.embedding_as_numpy() if hasattr(event, "embedding_as_numpy") else []
+                ts  = getattr(event, "timestamp", 0.0)
+                mid = getattr(event, "module_id", "unknown")
+                tid = getattr(event, "target_id", "unknown")
+                ok  = bool(getattr(event, "success", False))
+            if emb is not None and len(emb):
+                emb_list = emb.tolist() if hasattr(emb, "tolist") else list(emb)
                 data = ng_tract.write_outcome(
-                    timestamp=event.get("timestamp", 0.0),
-                    module_id=event.get("module_id", "unknown"),
-                    target_id=event.get("target_id", "unknown"),
-                    success=bool(event.get("success", False)),
-                    embedding=list(emb) if not isinstance(emb, list) else emb,
+                    timestamp=ts,
+                    module_id=mid,
+                    target_id=tid,
+                    success=ok,
+                    embedding=emb_list,
                 )
                 if not self.deposit(data):
                     logger.warning("Preload overflow — %d events dropped", len(events))
@@ -357,7 +388,7 @@ class NGTractBridge(NGBridge):
         # Holds typed BTF entry objects (PyOutcomeEntry, PyTopologyEntry,
         # PyExperienceEntry) and/or legacy dicts from JSONL fallback.
         self._peer_events: List[Any] = []
-        self._peer_events_max = 500
+        self._peer_events_max = 50_000
 
         # Myelination state (runtime only — not persisted)
         self._myelinated: Dict[str, MmapTract] = {}
@@ -464,11 +495,10 @@ class NGTractBridge(NGBridge):
         Searches cached peer events for similar embeddings and returns
         their targets as recommendations.
         """
-        # Absorb from River before querying -- ensures modules with low
-        # outcome throughput see current peer data, not a stale cache (#123)
+        # Substrate handles cross-module similarity -- drain River then defer to substrate
+        # (#155 test: returning None lets ng_lite.py fall through to _core.get_recommendations)
         self._drain_all()
-        if not self._connected or not self._peer_events:
-            return None
+        return None
 
         emb = self._normalize(embedding)
 
@@ -518,10 +548,10 @@ class NGTractBridge(NGBridge):
         Checks if this embedding is novel not just to this module,
         but to ALL peer modules on this host.
         """
-        # Absorb from River before querying (#123)
+        # Substrate handles cross-module novelty -- drain River then defer to substrate
+        # (#155 test: returning None lets ng_lite.py fall through to _core.detect_novelty)
         self._drain_all()
-        if not self._connected or not self._peer_events:
-            return None
+        return None
 
         emb = self._normalize(embedding)
         max_similarity = 0.0
@@ -659,8 +689,7 @@ class NGTractBridge(NGBridge):
 
         # Add to cache, maintaining bounded size
         self._peer_events.extend(new_events)
-        if len(self._peer_events) > self._peer_events_max:
-            self._peer_events = self._peer_events[-self._peer_events_max:]
+        self._enforce_window_limit()
 
         if new_events:
             logger.debug(
@@ -668,6 +697,17 @@ class NGTractBridge(NGBridge):
                 self._drain_count, len(new_events),
                 len(set(self._get_module_id(e) for e in new_events)),
             )
+
+    def _enforce_window_limit(self) -> None:
+        """Trim accumulated peer events to rolling-window max.
+
+        Absorb ALL events at drain time; evict oldest only after absorption
+        exceeds the window. Matches Darwin recorder._enforce_window_limit
+        (50k). Never cap mid-drain -- Law 7: no experience dropped at intake.
+        """
+        if len(self._peer_events) > self._peer_events_max:
+            excess = len(self._peer_events) - self._peer_events_max
+            self._peer_events = self._peer_events[excess:]
 
     def _drain_single_tract(
         self, tract_path: Path, peer_id: str,
