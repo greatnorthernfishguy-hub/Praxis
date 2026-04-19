@@ -22,6 +22,10 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-19] Claude Code — #5: replace dead eco drain with _drain_river() + _on_river_events()
+#   What: _pulse_cycle() now calls _drain_river(); event routing moved to _on_river_events() override
+#   Why: #5 — eco._peer_bridge was dead (SKIP_ECOSYSTEM=True → _eco=None); BTF drain is in base class
+#   How: _on_river_events() receives new BTF events; each routed through _route_pulse_event()
 # [2026-03-28] Claude Code (Opus 4.6) — #109 Pulse loop: drain outcomes between conversations
 #   What: Added _pulse_loop() daemon thread following the Tonic pattern.
 #   Why:  #109 — organs must run continuously. Praxis needs to absorb outcome
@@ -259,20 +263,15 @@ class PraxisHook(OpenClawAdapter):
 
     def _pulse_cycle(self):
         """One pulse cycle — drain River tracts, route to sensors (raw embeddings, Law 7)."""
-        # 1. Drain tracts from peer bridge
-        try:
-            bridge = getattr(self._eco, '_peer_bridge', None)
-            if bridge and hasattr(bridge, 'sync_state'):
-                before = len(getattr(bridge, '_peer_events', []))
-                bridge.sync_state(local_state={}, module_id=self.MODULE_ID)
-                peer_events = getattr(bridge, '_peer_events', [])
-                for event in peer_events[before:]:
-                    try:
-                        self._route_pulse_event(event)
-                    except Exception as exc:
-                        logger.debug("Pulse route error: %s", exc)
-        except Exception as exc:
-            logger.debug("Pulse drain error: %s", exc)
+        self._drain_river()
+
+    def _on_river_events(self, events: list) -> None:
+        """Route new River events to domain sensors via _route_pulse_event."""
+        for event in events:
+            try:
+                self._route_pulse_event(event)
+            except Exception as exc:
+                logger.debug("Pulse route error: %s", exc)
     def _route_pulse_event(self, event):
         """Route a drained River event to the appropriate sensor.
 
