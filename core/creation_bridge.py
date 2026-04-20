@@ -18,6 +18,12 @@ package that regrows the organism on any machine. No source code ships.
 #   Why:  CreationBridge is the Praxis→Morphogenesis integration wire.
 #   How:  PraxisEngine.quick() for intent extraction; grow_organism() for
 #         growth; package_organism() + save_morpho() for packaging.
+# [2026-04-20] Claude Code (Sonnet 4.6) — Task 3: move inline imports to module level
+#   What: numpy, PraxisEngine, OrganismIntent, grow_organism, package_organism,
+#         save_morpho, inspect_morpho moved from grow() body to module-level try block.
+#   Why:  Inline imports in hot paths mask ImportError at call time; module-level
+#         placement surfaces missing deps at import time and improves performance.
+#   How:  Extend existing try: import morphogenesis block with all 7 imports.
 # -------------------
 """
 
@@ -29,6 +35,11 @@ from typing import List, Optional
 
 try:
     import morphogenesis
+    import numpy as np
+    from morphogenesis.praxis import PraxisEngine
+    from morphogenesis.intent import OrganismIntent
+    from morphogenesis.compiler import grow_organism
+    from morphogenesis.holographic import package_organism, save_morpho, inspect_morpho
     _MORPHOGENESIS_AVAILABLE = True
 except ImportError:
     _MORPHOGENESIS_AVAILABLE = False
@@ -87,12 +98,6 @@ class CreationBridge:
         Raises:
             ValueError: If the organism dies during growth.
         """
-        import numpy as np
-        from morphogenesis.praxis import PraxisEngine
-        from morphogenesis.intent import OrganismIntent
-        from morphogenesis.compiler import grow_organism
-        from morphogenesis.holographic import package_organism, save_morpho, inspect_morpho
-
         if seed is None:
             seed = int(np.random.default_rng().integers(0, 2**31))
 
