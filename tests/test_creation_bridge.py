@@ -249,3 +249,56 @@ class TestEndToEnd:
         assert stats["conversation_sensor"]["total_captured"] >= 1
         assert stats["artifact_sensor"]["total_events"] >= 1
         assert stats["outcome_sensor"]["total_outcomes"] >= 1
+
+    def test_calibrated_creation_pipeline(self, tmp_path):
+        """Describe software + give examples → get calibrated .morpho → predict immediately."""
+        from core.praxis_hook import PraxisHook
+        from morphogenesis.holographic import load_morpho, instantiate_morpho
+        from morphogenesis.output import DecodedOutput
+
+        hook = PraxisHook()
+
+        # Normal CPU usage: 20-60%
+        normal_cpu = [22.0, 35.0, 41.0, 28.0, 55.0, 38.0, 47.0, 31.0]
+        # Anomalous CPU usage: runaway process
+        anomalous_cpu = [185.0, 220.0, 195.0, 240.0]
+
+        grow_result = hook.grow(
+            "filter and detect anomalies in CPU usage metrics",
+            seed=42,
+            output_dir=str(tmp_path),
+            normal_examples=normal_cpu,
+            anomaly_examples=anomalous_cpu,
+            mode="anomaly_score",
+        )
+
+        assert grow_result["status"] == "grown", f"Growth failed: {grow_result.get('error')}"
+        assert grow_result["calibrated"] is True, "Should be calibrated when examples provided"
+
+        # Load the .morpho and verify decoder is baked in
+        boundary = load_morpho(grow_result["morpho_path"])
+        assert boundary.output_contract["calibrated"] is True
+
+        # Instantiate and predict — no calibration step needed
+        organism, decoder, runtime = instantiate_morpho(boundary)
+        assert decoder is not None
+        assert decoder._calibrated is True
+
+        runtime.start()
+
+        # Normal readings should score low anomaly
+        normal_results = [runtime.predict(v, decoder) for v in [30.0, 42.0, 38.0]]
+        # Anomalous reading should score high
+        anomaly_results = [runtime.predict(v, decoder) for v in [200.0, 210.0]]
+
+        for r in normal_results + anomaly_results:
+            assert isinstance(r, DecodedOutput)
+            assert r.label in ("NORMAL", "SUSPICIOUS", "UNCERTAIN", "ANOMALY")
+            assert 0.0 <= r.confidence <= 1.0
+
+        runtime.stop()
+
+        print(f"\n  Calibrated organism: '{grow_result['name']}'")
+        print(f"  Behaviors: {grow_result['behaviors']}")
+        print(f"  Normal readings: {[r.label for r in normal_results]}")
+        print(f"  Anomaly readings: {[r.label for r in anomaly_results]}")
