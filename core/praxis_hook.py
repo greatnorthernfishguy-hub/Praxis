@@ -22,6 +22,12 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Add calibration params to PraxisHook.grow()
+#   What: grow() now accepts normal_examples, anomaly_examples, class_examples, mode params.
+#         Passes them through to CreationBridge.grow(). Returns calibrated flag in result dict.
+#   Why:  Task 2 — PraxisHook.grow() is the public API; must expose the same calibration
+#         surface as CreationBridge.grow() so callers can ship calibrated organisms.
+#   How:  Extended signature mirrors CreationBridge.grow(); kwargs forwarded verbatim.
 # [2026-04-20] Claude Code (Sonnet 4.6) — fix: clamp severity to 1.0 in grow() outcome recording
 #   What: severity=result.fitness → severity=min(1.0, result.fitness) in success record_outcome call
 #   Why:  Raw Lenia fitness energy is not normalized — values > 1.0 (observed ~9.2) produced
@@ -520,24 +526,34 @@ class PraxisHook(OpenClawAdapter):
         description: str,
         seed: Optional[int] = None,
         output_dir: Optional[str] = None,
+        normal_examples: Optional[List] = None,
+        anomaly_examples: Optional[List] = None,
+        class_examples: Optional[Dict] = None,
+        mode: str = "anomaly_score",
     ) -> Dict[str, Any]:
         """Grow a living organism from a natural language description.
 
         The full creation pipeline: extract intent → grow organism →
-        package as .morpho holographic boundary → record to all sensors.
+        optionally calibrate output decoder → package as .morpho → record to all sensors.
 
         The returned .morpho file is the deliverable. It can be loaded on
         any machine to instantiate a running organism without source code.
 
         Args:
-            description:  Natural language description of desired behavior.
-            seed:         Random seed. Random if omitted.
-            output_dir:   Where to write the .morpho file. Defaults to
-                          ~/.et_modules/praxis/organisms/
+            description:      Natural language description of desired behavior.
+            seed:             Random seed. Random if omitted.
+            output_dir:       Where to write the .morpho file. Defaults to
+                              ~/.et_modules/praxis/organisms/
+            normal_examples:  Data items representing expected/normal behavior.
+                              When provided, the decoder is calibrated before packaging.
+            anomaly_examples: Data items representing anomalous behavior.
+            class_examples:   Dict of {label: [items]} for classification mode.
+            mode:             Output decoder mode — 'anomaly_score' (default),
+                              'threshold', 'classification', 'signal_level', 'ranking'.
 
         Returns:
             Dict with 'status', 'morpho_path', 'name', 'behaviors',
-            'fitness', 'fingerprint'. Status is 'grown' on success,
+            'fitness', 'fingerprint', 'calibrated'. Status is 'grown' on success,
             'failed' on error (with 'error' key containing the message).
         """
         # Record the description as a conversation signal
@@ -553,7 +569,15 @@ class PraxisHook(OpenClawAdapter):
 
         try:
             bridge = CreationBridge()
-            result = bridge.grow(description, seed=seed, output_dir=output_dir)
+            result = bridge.grow(
+                description,
+                seed=seed,
+                output_dir=output_dir,
+                normal_examples=normal_examples,
+                anomaly_examples=anomaly_examples,
+                class_examples=class_examples,
+                mode=mode,
+            )
         except Exception as exc:
             self.record_outcome(
                 context=f"Failed to grow organism from: {description[:200]}",
@@ -599,6 +623,7 @@ class PraxisHook(OpenClawAdapter):
             "alive": result.alive,
             "fingerprint": result.fingerprint,
             "zone_graduations": result.zone_graduations,
+            "calibrated": result.calibrated,
         }
 
     def on_conversation_started(self):

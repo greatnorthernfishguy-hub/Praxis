@@ -7,6 +7,13 @@ The .morpho file is a holographic boundary — a self-contained install
 package that regrows the organism on any machine. No source code ships.
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Add calibrated growth
+#   What: GrowResult.calibrated field (Task 1). grow() now accepts
+#         normal_examples, anomaly_examples, class_examples, mode params.
+#         When examples provided, OutputDecoder calibrated and baked into .morpho.
+#   Why:  Ship organisms that predict() immediately without post-install setup.
+#   How:  OrganismRuntime + OutputDecoder.calibrate_from_data() after growth;
+#         package_organism(organism, decoder=decoder) bakes calibration in.
 # [2026-04-20] Claude Code (Sonnet 4.6) — Initial creation
 #   What: GrowResult dataclass + CreationBridge stub
 #   Why:  Task 1 of Morphogenesis→Praxis integration. TDD first pass.
@@ -31,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 try:
     import morphogenesis
@@ -40,6 +47,8 @@ try:
     from morphogenesis.intent import OrganismIntent
     from morphogenesis.compiler import grow_organism
     from morphogenesis.holographic import package_organism, save_morpho, inspect_morpho
+    from morphogenesis.output import OutputDecoder, OutputType
+    from morphogenesis.runtime import OrganismRuntime
     _MORPHOGENESIS_AVAILABLE = True
 except ImportError:
     _MORPHOGENESIS_AVAILABLE = False
@@ -79,25 +88,41 @@ class CreationBridge:
         description: str,
         seed: Optional[int] = None,
         output_dir: Optional[str] = None,
-        _override_intent: dict = None,
+        normal_examples: Optional[List] = None,
+        anomaly_examples: Optional[List] = None,
+        class_examples: Optional[Dict] = None,
+        mode: str = "anomaly_score",
+        _override_intent: Optional[dict] = None,
     ) -> GrowResult:
         """Grow a living organism from a natural language description.
 
-        Extracts intent using PraxisEngine, grows the organism, and packages
-        it as a .morpho holographic boundary file.
+        Extracts intent using PraxisEngine, grows the organism, optionally
+        calibrates the output decoder, and packages as a .morpho file.
+
+        When normal_examples are provided, the decoder is calibrated before
+        packaging — the .morpho ships ready to predict() without any setup.
+        When no examples are provided, the .morpho ships uncalibrated.
 
         Args:
             description:      Natural language description of desired behavior.
             seed:             Random seed for reproducible growth.
             output_dir:       Directory to write the .morpho file.
                               Defaults to ~/.et_modules/praxis/organisms/
+            normal_examples:  Data items representing expected/normal behavior.
+                              Required to ship a calibrated organism.
+            anomaly_examples: Data items representing anomalous behavior.
+                              Used for anomaly_score and threshold modes.
+            class_examples:   Dict of {label: [items]} for classification mode.
+            mode:             Output decoder mode — 'anomaly_score' (default),
+                              'threshold', 'classification', 'signal_level', 'ranking'.
             _override_intent: Dict to use instead of NL extraction (for testing).
 
         Returns:
             GrowResult with path to the .morpho file and summary metadata.
+            result.calibrated is True when examples were provided.
 
         Raises:
-            ValueError: If the organism dies during growth.
+            ValueError: If the organism dies, or mode is unknown.
         """
         if seed is None:
             seed = int(np.random.default_rng().integers(0, 2**31))
@@ -119,8 +144,29 @@ class CreationBridge:
                 f"Try a more descriptive prompt or a different seed."
             )
 
-        # Packaging
-        boundary = package_organism(organism)
+        # Calibration (optional — only when examples are provided)
+        decoder = None
+        calibrated = False
+        if normal_examples is not None:
+            try:
+                output_type = OutputType(mode)
+            except ValueError:
+                valid = [t.value for t in OutputType]
+                raise ValueError(
+                    f"Unknown decoder mode '{mode}'. Valid: {', '.join(valid)}"
+                )
+            runtime = OrganismRuntime.from_organism(organism)
+            decoder = OutputDecoder(mode=output_type)
+            decoder.calibrate_from_data(
+                runtime,
+                normal_data=normal_examples,
+                anomaly_data=anomaly_examples,
+                class_data=class_examples,
+            )
+            calibrated = decoder._calibrated
+
+        # Packaging — decoder=None for uncalibrated, decoder=<OutputDecoder> bakes calibration in
+        boundary = package_organism(organism, decoder=decoder)
 
         out_dir = Path(output_dir) if output_dir else (
             Path.home() / ".et_modules" / "praxis" / "organisms"
@@ -140,4 +186,5 @@ class CreationBridge:
             alive=True,
             fingerprint=boundary.fingerprint,
             zone_graduations=info.get("zone_graduations", 0.0),
+            calibrated=calibrated,
         )
