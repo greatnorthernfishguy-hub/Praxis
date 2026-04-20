@@ -151,3 +151,45 @@ class TestHookGrow:
         hook.grow("filter and summarize data streams", seed=42, output_dir=str(tmp_path))
         after = hook._conv_sensor.get_stats()["total_captured"]
         assert after > before, "grow() should record the description as conversation"
+
+
+class TestEndToEnd:
+    """The full pipeline: describe → grow → package → inspect → instantiate → run."""
+
+    def test_full_creation_pipeline(self, tmp_path):
+        """Describe software in plain English, get a running organism."""
+        from core.praxis_hook import PraxisHook
+        from morphogenesis.holographic import load_morpho, instantiate_morpho
+
+        hook = PraxisHook()
+
+        # --- Step 1: Describe what you want ---
+        grow_result = hook.grow(
+            "filter and reduce sensor noise from a data stream",
+            seed=42,
+            output_dir=str(tmp_path),
+        )
+
+        assert grow_result["status"] == "grown", f"Growth failed: {grow_result.get('error')}"
+        assert os.path.exists(grow_result["morpho_path"])
+
+        # --- Step 2: Inspect the package ---
+        boundary = load_morpho(grow_result["morpho_path"])
+        assert boundary.name == grow_result["name"]
+        assert boundary.behaviors is not None
+
+        # --- Step 3: Install and run ---
+        organism, decoder, runtime = instantiate_morpho(boundary)
+        runtime.start()
+
+        for value in [1.0, 2.0, 3.0, 100.0, 1.5]:
+            result = runtime.process(value)
+            assert isinstance(result.output_flow, float)
+
+        runtime.stop()
+
+        # --- Step 4: Verify Praxis learned from the creation ---
+        stats = hook._module_stats()
+        assert stats["conversation_sensor"]["total_captured"] >= 1
+        assert stats["artifact_sensor"]["total_events"] >= 1
+        assert stats["outcome_sensor"]["total_outcomes"] >= 1
