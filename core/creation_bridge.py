@@ -12,6 +12,7 @@ package that regrows the organism on any machine. No source code ships.
 #   Why:  Task 1 of Morphogenesis→Praxis integration. TDD first pass.
 #   How:  GrowResult captures grow() output. CreationBridge.grow() raises
 #         NotImplementedError until Task 2 fills it in.
+#         also fixed type annotations per quality review
 # -------------------
 """
 
@@ -19,10 +20,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import List, Optional
 
 try:
-    import morphogenesis as _morphogenesis_check
+    import morphogenesis
     _MORPHOGENESIS_AVAILABLE = True
 except ImportError:
     _MORPHOGENESIS_AVAILABLE = False
@@ -33,7 +34,7 @@ class GrowResult:
     """Result of growing an organism from a natural language description."""
     morpho_path: str
     name: str
-    behaviors: list
+    behaviors: List[str]
     fitness: float
     alive: bool
     fingerprint: str
@@ -59,8 +60,8 @@ class CreationBridge:
     def grow(
         self,
         description: str,
-        seed: int = None,
-        output_dir: str = None,
+        seed: Optional[int] = None,
+        output_dir: Optional[str] = None,
         _override_intent: dict = None,
     ) -> GrowResult:
         raise NotImplementedError
