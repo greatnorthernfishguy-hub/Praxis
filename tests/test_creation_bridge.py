@@ -412,3 +412,44 @@ class TestEndToEnd:
         print(f"  Behaviors: {grow_result['behaviors']}")
         print(f"  Normal readings: {[r.label for r in normal_results]}")
         print(f"  Anomaly readings: {[r.label for r in anomaly_results]}")
+
+    def test_multi_turn_refinement_produces_targeted_organism(self, tmp_path):
+        """Ambiguous description refined through questions → correctly-targeted organism."""
+        from core.praxis_hook import PraxisHook
+        import os
+
+        hook = PraxisHook()
+
+        # Start with an ambiguous description — no behavior keywords
+        session = hook.start_conversation("process incoming data")
+        assert "session_id" in session
+        sid = session["session_id"]
+
+        # Ambiguous description should trigger at least one question
+        assert len(session["questions"]) > 0, "Ambiguous description should trigger questions"
+
+        # Find and answer the behaviors question
+        behavior_q = next(
+            (q for q in session["questions"] if q["field"] == "behaviors"),
+            None,
+        )
+        assert behavior_q is not None, "Should ask about behaviors for ambiguous description"
+
+        remaining = hook.answer_question(sid, "behaviors", "filter accumulate")
+        assert "remaining_questions" in remaining
+
+        # Grow from the refined session
+        result = hook.grow_from_session(sid, seed=42, output_dir=str(tmp_path))
+
+        assert result["status"] == "grown", f"Growth failed: {result.get('error')}"
+        assert os.path.exists(result["morpho_path"])
+
+        # The refined organism should carry the clarified behaviors
+        behaviors = result["behaviors"]
+        assert any(b in behaviors for b in ("filter", "accumulate")), (
+            f"Refined organism should have filter/accumulate behaviors, got: {behaviors}"
+        )
+
+        print(f"\n  Refined organism: '{result['name']}'")
+        print(f"  Behaviors: {behaviors}")
+        print(f"  Fitness: {result['fitness']:.4f}")
