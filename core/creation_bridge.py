@@ -13,6 +13,11 @@ package that regrows the organism on any machine. No source code ships.
 #   How:  GrowResult captures grow() output. CreationBridge.grow() raises
 #         NotImplementedError until Task 2 fills it in.
 #         also fixed type annotations per quality review
+# [2026-04-20] Claude Code (Sonnet 4.6) — Task 2: implement grow()
+#   What: Full grow() implementation — NL description → .morpho file
+#   Why:  CreationBridge is the Praxis→Morphogenesis integration wire.
+#   How:  PraxisEngine.quick() for intent extraction; grow_organism() for
+#         growth; package_organism() + save_morpho() for packaging.
 # -------------------
 """
 
@@ -64,4 +69,69 @@ class CreationBridge:
         output_dir: Optional[str] = None,
         _override_intent: dict = None,
     ) -> GrowResult:
-        raise NotImplementedError
+        """Grow a living organism from a natural language description.
+
+        Extracts intent using PraxisEngine, grows the organism, and packages
+        it as a .morpho holographic boundary file.
+
+        Args:
+            description:      Natural language description of desired behavior.
+            seed:             Random seed for reproducible growth.
+            output_dir:       Directory to write the .morpho file.
+                              Defaults to ~/.et_modules/praxis/organisms/
+            _override_intent: Dict to use instead of NL extraction (for testing).
+
+        Returns:
+            GrowResult with path to the .morpho file and summary metadata.
+
+        Raises:
+            ValueError: If the organism dies during growth.
+        """
+        import numpy as np
+        from morphogenesis.praxis import PraxisEngine
+        from morphogenesis.intent import OrganismIntent
+        from morphogenesis.compiler import grow_organism
+        from morphogenesis.holographic import package_organism, save_morpho, inspect_morpho
+
+        if seed is None:
+            seed = int(np.random.default_rng().integers(0, 2**31))
+
+        # Intent extraction
+        if _override_intent is not None:
+            intent = OrganismIntent.from_dict(_override_intent)
+        else:
+            engine = PraxisEngine()
+            intent = engine.quick(description)
+
+        # Growth
+        rng = np.random.default_rng(seed)
+        organism = grow_organism(intent, rng=rng)
+
+        if not organism.alive:
+            raise ValueError(
+                f"Organism '{intent.name}' died during growth (seed={seed}). "
+                f"Try a more descriptive prompt or a different seed."
+            )
+
+        # Packaging
+        boundary = package_organism(organism)
+
+        out_dir = Path(output_dir) if output_dir else (
+            Path.home() / ".et_modules" / "praxis" / "organisms"
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        morpho_path = str(out_dir / f"{intent.name}_{seed}.morpho")
+
+        save_morpho(boundary, morpho_path)
+
+        info = inspect_morpho(morpho_path)
+
+        return GrowResult(
+            morpho_path=morpho_path,
+            name=boundary.name,
+            behaviors=info.get("behaviors") or [],
+            fitness=info.get("fitness", 0.0),
+            alive=True,
+            fingerprint=boundary.fingerprint,
+            zone_graduations=info.get("zone_graduations", 0.0),
+        )
