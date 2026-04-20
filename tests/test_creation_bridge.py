@@ -132,6 +132,18 @@ class TestCreationBridge:
         )
         assert result.calibrated is True
 
+    def test_grow_invalid_mode_raises(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        with pytest.raises(ValueError, match="Unknown decoder mode"):
+            bridge.grow(
+                "filter noise",
+                seed=42,
+                output_dir=str(tmp_path),
+                normal_examples=[1.0, 2.0],
+                mode="totally_bogus_mode",
+            )
+
     def test_grow_calibrated_morpho_can_predict(self, tmp_path):
         from core.creation_bridge import CreationBridge
         from morphogenesis.holographic import load_morpho, instantiate_morpho

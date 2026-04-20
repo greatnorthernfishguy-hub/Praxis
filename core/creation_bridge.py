@@ -7,6 +7,11 @@ The .morpho file is a holographic boundary — a self-contained install
 package that regrows the organism on any machine. No source code ships.
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Fix: don't bake uncalibrated decoder
+#   What: If calibrate_from_data() sets _calibrated=False, we now set decoder=None.
+#         gate decoder on calibrated — don't bake uncalibrated decoder on calibration failure
+#   Why:  Consistency: GrowResult.calibrated=False matches no decoder in .morpho.
+#   How:  After reading calibrated flag, check it: if not calibrated, decoder=None.
 # [2026-04-20] Claude Code (Sonnet 4.6) — Add calibrated growth
 #   What: GrowResult.calibrated field (Task 1). grow() now accepts
 #         normal_examples, anomaly_examples, class_examples, mode params.
@@ -164,6 +169,8 @@ class CreationBridge:
                 class_data=class_examples,
             )
             calibrated = decoder._calibrated
+            if not calibrated:
+                decoder = None  # calibration failed — don't bake uncalibrated decoder
 
         # Packaging — decoder=None for uncalibrated, decoder=<OutputDecoder> bakes calibration in
         boundary = package_organism(organism, decoder=decoder)
