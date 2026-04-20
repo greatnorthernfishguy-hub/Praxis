@@ -44,7 +44,7 @@ def test_defaults():
 
     # CPS
     assert cfg.cps.max_entries == 50000
-    assert cfg.cps.embedding_dim == 384
+    assert cfg.cps.embedding_dim == 768
 
     # Surfacing
     assert cfg.surfacing.max_context_items == 10
@@ -64,7 +64,7 @@ def test_defaults():
     assert cfg.ng_lite.checkpoint_interval_seconds == 300
 
     # Embedding
-    assert cfg.embedding.dim == 384
+    assert cfg.embedding.dim == 768
     assert cfg.embedding.fallback_to_hash is True
 
 

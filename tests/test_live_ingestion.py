@@ -8,6 +8,11 @@ Not a unit test — this exercises the full pipeline with real embeddings
 (or hash fallback if no model available).
 
 # ---- Changelog ----
+# [2026-04-19] Claude Code (Sonnet 4.6) — Update to record_conversation() API.
+#   What: Replace _module_on_message() calls with record_conversation().
+#   Why:  _module_on_message is now a no-op (River-based arch). record_conversation()
+#         is the new public standalone API — symmetric with record_artifact/outcome.
+#   How:  s/_module_on_message(msg, hook._embed(msg))/record_conversation(msg)/
 # [2026-03-18] Claude (Opus 4.6) — Initial creation.
 #   What: End-to-end ingestion test with real content through all sensors.
 #   Why:  Verify Praxis pipeline before building Converter.
@@ -41,7 +46,7 @@ def test_live_conversation_ingestion():
 
     results = []
     for msg in messages:
-        result = hook._module_on_message(msg, hook._embed(msg))
+        result = hook.record_conversation(msg)
         results.append(result)
 
     # All messages should be captured
@@ -150,7 +155,7 @@ def test_live_full_digestion_simulation():
         "It's lightweight — about 15K lines of C. Good for quick edits.",
     ]
     for msg in phase0_msgs:
-        hook._module_on_message(msg, hook._embed(msg))
+        hook.record_conversation(msg)
 
     # --- Phase 1: Structural Survey (Artifact Stream) ---
     artifacts = [

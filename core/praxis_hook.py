@@ -81,6 +81,13 @@ License: AGPL-3.0
 #         internally, clearing incoming tracts and updating bridge state.
 #         Event routing removed — Law 7 violation deferred to punchlist #154.
 
+# [2026-04-19] Claude Code (Sonnet 4.6) — Add record_conversation() standalone public API
+#   What: record_conversation(text, direction, layer_depth) — public method symmetric with
+#         record_artifact() and record_outcome(). Feeds text directly to conv sensor + CPS.
+#   Why: _module_on_message is now a no-op (River path). Tests and standalone integrations
+#        (Morphogenesis) need a direct conversation ingestion path without the River.
+#   How: Embeds text, calls _conv_sensor.feed(), stores to CPS, runs temporal binding.
+#        Returns {"status": "captured", "signal_id": ..., "temporal_bindings": N}.
 # [2026-04-18] Claude Code (Sonnet 4.6) — Punchlist #154: Wire _route_pulse_event into _pulse_cycle
 #   What: _pulse_cycle now routes each new River event through _route_pulse_event after sync_state.
 #   Why:  #137 fixed the drain no-op but deferred event routing. _route_pulse_event was correctly
@@ -414,6 +421,85 @@ class PraxisHook(OpenClawAdapter):
         if now - self._last_checkpoint > self._checkpoint_interval:
             self._checkpoint()
             self._last_checkpoint = now
+
+    # -----------------------------------------------------------------
+    # Conversation recording (PRD §4.1 — standalone/dev mode)
+    # -----------------------------------------------------------------
+
+    def record_conversation(
+        self,
+        text: str,
+        direction: str = "human",
+        layer_depth: str = "implementation",
+    ) -> Dict[str, Any]:
+        """Record a conversation turn directly (standalone/dev mode).
+
+        Public API for feeding conversation text without the River —
+        symmetric with record_artifact() and record_outcome().
+        Used in testing and for direct integration (e.g. Morphogenesis).
+
+        In production on the live organism, conversation arrives via
+        topology delta in the River (_ingest_conversation). This method
+        provides the same processing for contexts without a River.
+        """
+        if not text or len(text) < self._cfg.sensors.conversation.min_message_length:
+            return {"status": "skipped", "reason": "too_short"}
+
+        embedding = self._embed(text)
+
+        self._turn_index += 1
+        self._signal_count += 1
+
+        signal = self._conv_sensor.feed(
+            text=text,
+            embedding=embedding,
+            direction=direction,
+            session_id=self._session_id,
+            modality="text",
+            layer_depth=layer_depth,
+        )
+        if signal is None:
+            return {"status": "skipped", "reason": "sensor_rejected"}
+
+        signal_target_id = f"conv:{signal.signal_id}"
+
+        if self._eco:
+            try:
+                self._eco.dual_record_outcome(
+                    content=text,
+                    embedding=embedding,
+                    target_id=signal_target_id,
+                    success=True,
+                    metadata={
+                        "source": "praxis",
+                        "pheromone": "conversation",
+                        "session_id": self._session_id,
+                        "turn_index": self._turn_index,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Substrate record failed: %s", exc)
+
+        try:
+            self._cps.store_from_signal(
+                content=text,
+                embedding=embedding,
+                entry_type="INTENT",
+                pheromone_source="conversation",
+                session_id=self._session_id,
+                layer_depth=layer_depth,
+                metadata={"turn_index": self._turn_index, "signal_id": signal.signal_id},
+            )
+        except Exception as exc:
+            logger.debug("CPS store failed: %s", exc)
+
+        bindings = self._bind_temporal(signal, embedding, signal_target_id)
+
+        return {
+            "status": "captured",
+            "signal_id": signal.signal_id,
+            "temporal_bindings": bindings,
+        }
 
     def on_conversation_started(self):
         """Mode swap: faster pulse during active conversation."""
