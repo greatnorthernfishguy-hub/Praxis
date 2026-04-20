@@ -113,6 +113,49 @@ class TestCreationBridge:
                 _override_intent={"name": "tiny", "width": 3, "height": 3, "max_timesteps": 2},
             )
 
+    def test_grow_without_examples_is_uncalibrated(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        result = bridge.grow("filter noise", seed=42, output_dir=str(tmp_path))
+        assert result.calibrated is False
+
+    def test_grow_with_normal_examples_is_calibrated(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        result = bridge.grow(
+            "filter noise from signal",
+            seed=42,
+            output_dir=str(tmp_path),
+            normal_examples=[1.0, 2.0, 1.5, 1.8, 2.2],
+            anomaly_examples=[50.0, 80.0, 100.0],
+            mode="anomaly_score",
+        )
+        assert result.calibrated is True
+
+    def test_grow_calibrated_morpho_can_predict(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        from morphogenesis.holographic import load_morpho, instantiate_morpho
+        from morphogenesis.output import DecodedOutput
+        bridge = CreationBridge()
+        result = bridge.grow(
+            "filter noise from signal",
+            seed=42,
+            output_dir=str(tmp_path),
+            normal_examples=[1.0, 2.0, 1.5, 1.8, 2.2],
+            anomaly_examples=[50.0, 80.0, 100.0],
+            mode="anomaly_score",
+        )
+        boundary = load_morpho(result.morpho_path)
+        organism, decoder, runtime = instantiate_morpho(boundary)
+        assert decoder is not None
+        assert decoder._calibrated is True
+        runtime.start()
+        decoded = runtime.predict(75.0, decoder)
+        assert isinstance(decoded, DecodedOutput)
+        assert decoded.label in ("NORMAL", "SUSPICIOUS", "UNCERTAIN", "ANOMALY")
+        assert 0.0 <= decoded.confidence <= 1.0
+        runtime.stop()
+
 
 class TestHookGrow:
     def test_hook_grow_returns_dict(self, tmp_path):
@@ -151,6 +194,19 @@ class TestHookGrow:
         hook.grow("filter and summarize data streams", seed=42, output_dir=str(tmp_path))
         after = hook._conv_sensor.get_stats()["total_captured"]
         assert after > before, "grow() should record the description as conversation"
+
+    def test_hook_grow_calibrated(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        result = hook.grow(
+            "filter sensor noise",
+            seed=42,
+            output_dir=str(tmp_path),
+            normal_examples=[1.0, 2.0, 1.5],
+            anomaly_examples=[50.0, 80.0],
+        )
+        assert result["status"] == "grown"
+        assert result["calibrated"] is True
 
 
 class TestEndToEnd:

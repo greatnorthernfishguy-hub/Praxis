@@ -55,6 +55,7 @@ class GrowResult:
     alive: bool
     fingerprint: str
     zone_graduations: float
+    calibrated: bool = False
 
 
 class CreationBridge:
