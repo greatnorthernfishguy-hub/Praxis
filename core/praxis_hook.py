@@ -22,6 +22,11 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Add grow() — Morphogenesis integration entry point
+#   What: grow(description, seed, output_dir) delegates to CreationBridge, records all 3 sensors.
+#   Why:  Praxis→Morphogenesis integration. NL description → .morpho file via one call.
+#   How:  CreationBridge.grow() for growth; record_conversation for context; record_artifact
+#         for .morpho; record_outcome for success/failure. Returns status dict.
 # [2026-04-19] Claude Code — #5: replace dead eco drain with _drain_river() + _on_river_events()
 #   What: _pulse_cycle() now calls _drain_river(); event routing moved to _on_river_events() override
 #   Why: #5 — eco._peer_bridge was dead (SKIP_ECOSYSTEM=True → _eco=None); BTF drain is in base class
@@ -499,6 +504,96 @@ class PraxisHook(OpenClawAdapter):
             "status": "captured",
             "signal_id": signal.signal_id,
             "temporal_bindings": bindings,
+        }
+
+    # -----------------------------------------------------------------
+    # Creation interface — Morphogenesis integration
+    # -----------------------------------------------------------------
+
+    def grow(
+        self,
+        description: str,
+        seed: Optional[int] = None,
+        output_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Grow a living organism from a natural language description.
+
+        The full creation pipeline: extract intent → grow organism →
+        package as .morpho holographic boundary → record to all sensors.
+
+        The returned .morpho file is the deliverable. It can be loaded on
+        any machine to instantiate a running organism without source code.
+
+        Args:
+            description:  Natural language description of desired behavior.
+            seed:         Random seed. Random if omitted.
+            output_dir:   Where to write the .morpho file. Defaults to
+                          ~/.et_modules/praxis/organisms/
+
+        Returns:
+            Dict with 'status', 'morpho_path', 'name', 'behaviors',
+            'fitness', 'fingerprint'. Status is 'grown' on success,
+            'failed' on error (with 'error' key containing the message).
+        """
+        # Record the description as a conversation signal
+        self.record_conversation(description)
+
+        try:
+            from core.creation_bridge import CreationBridge
+        except ImportError:
+            return {
+                "status": "failed",
+                "error": "morphogenesis not installed — run: pip3 install -e /home/josh/Morphogenesis",
+            }
+
+        try:
+            bridge = CreationBridge()
+            result = bridge.grow(description, seed=seed, output_dir=output_dir)
+        except Exception as exc:
+            self.record_outcome(
+                context=f"Failed to grow organism from: {description[:200]}",
+                outcome_type="review",
+                success=False,
+                severity=0.6,
+                layer_depth="architecture",
+                metadata={"error": str(exc)},
+            )
+            return {"status": "failed", "error": str(exc)}
+
+        # Record the .morpho file as an artifact
+        self.record_artifact(
+            artifact_id=result.morpho_path,
+            content=(
+                f"Grown organism '{result.name}' — behaviors: {result.behaviors}, "
+                f"fitness: {result.fitness:.3f}, fingerprint: {result.fingerprint}"
+            ),
+            artifact_type="morpho",
+            event_type="create",
+            layer_depth="architecture",
+        )
+
+        # Record the growth outcome
+        self.record_outcome(
+            context=(
+                f"Grew organism '{result.name}' with behaviors {result.behaviors}. "
+                f"Fitness: {result.fitness:.3f}. "
+                f"Packaged as .morpho at: {result.morpho_path}"
+            ),
+            outcome_type="review",
+            success=True,
+            severity=result.fitness,
+            layer_depth="architecture",
+        )
+
+        return {
+            "status": "grown",
+            "morpho_path": result.morpho_path,
+            "name": result.name,
+            "behaviors": result.behaviors,
+            "fitness": result.fitness,
+            "alive": result.alive,
+            "fingerprint": result.fingerprint,
+            "zone_graduations": result.zone_graduations,
         }
 
     def on_conversation_started(self):
