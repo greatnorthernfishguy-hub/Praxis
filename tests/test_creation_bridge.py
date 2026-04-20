@@ -1,0 +1,153 @@
+"""Tests for CreationBridge — Morphogenesis→Praxis integration."""
+
+import os
+import sys
+import tempfile
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+
+morphogenesis = pytest.importorskip(
+    "morphogenesis",
+    reason="morphogenesis not installed — run: pip3 install -e /home/josh/Morphogenesis",
+)
+
+
+class TestGrowResult:
+    def test_grow_result_has_required_fields(self):
+        from core.creation_bridge import GrowResult
+        r = GrowResult(
+            morpho_path="/tmp/test.morpho",
+            name="test_org",
+            behaviors=["filter"],
+            fitness=0.5,
+            alive=True,
+            fingerprint="abc123",
+            zone_graduations=0.8,
+        )
+        assert r.morpho_path == "/tmp/test.morpho"
+        assert r.name == "test_org"
+        assert r.behaviors == ["filter"]
+        assert r.fitness == 0.5
+        assert r.alive is True
+        assert r.fingerprint == "abc123"
+        assert r.zone_graduations == 0.8
+
+
+class TestCreationBridge:
+    def test_grow_returns_grow_result(self, tmp_path):
+        from core.creation_bridge import CreationBridge, GrowResult
+        bridge = CreationBridge()
+        result = bridge.grow(
+            "filter noise from signal",
+            seed=42,
+            output_dir=str(tmp_path),
+        )
+        assert isinstance(result, GrowResult)
+
+    def test_grow_creates_morpho_file(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        result = bridge.grow(
+            "filter noise from signal",
+            seed=42,
+            output_dir=str(tmp_path),
+        )
+        assert os.path.exists(result.morpho_path)
+        assert result.morpho_path.endswith(".morpho")
+
+    def test_grow_morpho_is_inspectable(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        from morphogenesis.holographic import inspect_morpho
+        bridge = CreationBridge()
+        result = bridge.grow(
+            "filter and accumulate metrics",
+            seed=42,
+            output_dir=str(tmp_path),
+        )
+        info = inspect_morpho(result.morpho_path)
+        assert info["name"] == result.name
+        assert isinstance(info["behaviors"], list)
+        assert isinstance(info["fitness"], float)
+
+    def test_grow_morpho_is_instantiable(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        from morphogenesis.holographic import load_morpho, instantiate_morpho
+        bridge = CreationBridge()
+        result = bridge.grow(
+            "filter noise",
+            seed=42,
+            output_dir=str(tmp_path),
+        )
+        boundary = load_morpho(result.morpho_path)
+        organism, decoder, runtime = instantiate_morpho(boundary)
+        assert organism is not None
+        runtime.start()
+        runtime.stop()
+
+    def test_grow_seed_gives_same_name(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        r1 = bridge.grow("filter noise", seed=42, output_dir=str(tmp_path))
+        r2 = bridge.grow("filter noise", seed=42, output_dir=str(tmp_path))
+        assert r1.name == r2.name
+
+    def test_grow_extracts_behaviors_from_description(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        result = bridge.grow(
+            "reduce and summarize the stream",
+            seed=42,
+            output_dir=str(tmp_path),
+        )
+        assert "reduce" in result.behaviors or len(result.behaviors) > 0
+
+    def test_grow_dead_organism_raises(self, tmp_path):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        with pytest.raises(ValueError, match="died during growth"):
+            bridge.grow(
+                "filter",
+                seed=1,
+                output_dir=str(tmp_path),
+                _override_intent={"name": "tiny", "width": 3, "height": 3, "max_timesteps": 2},
+            )
+
+
+class TestHookGrow:
+    def test_hook_grow_returns_dict(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        result = hook.grow(
+            "filter noise from signal",
+            seed=42,
+            output_dir=str(tmp_path),
+        )
+        assert isinstance(result, dict)
+        assert result["status"] == "grown"
+        assert "morpho_path" in result
+        assert "behaviors" in result
+
+    def test_hook_grow_records_artifact(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        before = hook._art_sensor.get_stats()["total_events"]
+        hook.grow("filter and accumulate", seed=42, output_dir=str(tmp_path))
+        after = hook._art_sensor.get_stats()["total_events"]
+        assert after > before, "grow() should record the .morpho as an artifact"
+
+    def test_hook_grow_records_outcome(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        before = hook._out_sensor.get_stats()["total_outcomes"]
+        hook.grow("filter noise", seed=42, output_dir=str(tmp_path))
+        after = hook._out_sensor.get_stats()["total_outcomes"]
+        assert after > before, "grow() should record the growth outcome"
+
+    def test_hook_grow_records_conversation(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        before = hook._conv_sensor.get_stats()["total_captured"]
+        hook.grow("filter and summarize data streams", seed=42, output_dir=str(tmp_path))
+        after = hook._conv_sensor.get_stats()["total_captured"]
+        assert after > before, "grow() should record the description as conversation"
