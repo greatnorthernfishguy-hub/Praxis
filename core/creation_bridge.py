@@ -7,6 +7,12 @@ The .morpho file is a holographic boundary — a self-contained install
 package that regrows the organism on any machine. No source code ships.
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Add multi-turn refinement to CreationBridge
+#   What: refine(), answer(), grow_refined() methods. _grow_from_intent() factored out
+#         so grow() and grow_refined() share growth logic.
+#         ConversationState, ClarificationQuestion, Tuple added to imports.
+#   Why:  Ambiguous descriptions get clarifying questions answered before growth.
+#   How:  PraxisEngine.hear/clarify/answer/finalize conversation flow exposed via bridge.
 # [2026-04-20] Claude Code (Sonnet 4.6) — Fix: don't bake uncalibrated decoder
 #   What: If calibrate_from_data() sets _calibrated=False, we now set decoder=None.
 #         gate decoder on calibrated — don't bake uncalibrated decoder on calibration failure
@@ -43,12 +49,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 try:
     import morphogenesis
     import numpy as np
-    from morphogenesis.praxis import PraxisEngine
+    from morphogenesis.praxis import PraxisEngine, ConversationState, ClarificationQuestion
     from morphogenesis.intent import OrganismIntent
     from morphogenesis.compiler import grow_organism
     from morphogenesis.holographic import package_organism, save_morpho, inspect_morpho
@@ -87,6 +93,74 @@ class CreationBridge:
                 "morphogenesis is not installed. "
                 "Run: pip3 install -e /home/josh/Morphogenesis"
             )
+
+    def _grow_from_intent(
+        self,
+        intent: "OrganismIntent",
+        seed: int,
+        output_dir: Optional[str],
+        normal_examples: Optional[List],
+        anomaly_examples: Optional[List],
+        class_examples: Optional[Dict],
+        mode: str,
+    ) -> "GrowResult":
+        """Grow, calibrate, and package an organism from a resolved intent.
+
+        Shared by grow() and grow_refined(). Intent is already extracted
+        by the time this is called.
+        """
+        rng = np.random.default_rng(seed)
+        organism = grow_organism(intent, rng=rng)
+
+        if not organism.alive:
+            raise ValueError(
+                f"Organism '{intent.name}' died during growth (seed={seed}). "
+                f"Try a more descriptive prompt or a different seed."
+            )
+
+        decoder = None
+        calibrated = False
+        if normal_examples is not None:
+            try:
+                output_type = OutputType(mode)
+            except ValueError:
+                valid = [t.value for t in OutputType]
+                raise ValueError(
+                    f"Unknown decoder mode '{mode}'. Valid: {', '.join(valid)}"
+                )
+            runtime = OrganismRuntime.from_organism(organism)
+            decoder = OutputDecoder(mode=output_type)
+            decoder.calibrate_from_data(
+                runtime,
+                normal_data=normal_examples,
+                anomaly_data=anomaly_examples,
+                class_data=class_examples,
+            )
+            calibrated = decoder._calibrated
+            if not calibrated:
+                decoder = None
+
+        boundary = package_organism(organism, decoder=decoder)
+
+        out_dir = Path(output_dir) if output_dir else (
+            Path.home() / ".et_modules" / "praxis" / "organisms"
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        morpho_path = str(out_dir / f"{intent.name}_{seed}.morpho")
+
+        save_morpho(boundary, morpho_path)
+        info = inspect_morpho(morpho_path)
+
+        return GrowResult(
+            morpho_path=morpho_path,
+            name=boundary.name,
+            behaviors=info.get("behaviors") or [],
+            fitness=info.get("fitness", 0.0),
+            alive=True,
+            fingerprint=boundary.fingerprint,
+            zone_graduations=info.get("zone_graduations", 0.0),
+            calibrated=calibrated,
+        )
 
     def grow(
         self,
@@ -132,66 +206,91 @@ class CreationBridge:
         if seed is None:
             seed = int(np.random.default_rng().integers(0, 2**31))
 
-        # Intent extraction
         if _override_intent is not None:
             intent = OrganismIntent.from_dict(_override_intent)
         else:
             engine = PraxisEngine()
             intent = engine.quick(description)
 
-        # Growth
-        rng = np.random.default_rng(seed)
-        organism = grow_organism(intent, rng=rng)
-
-        if not organism.alive:
-            raise ValueError(
-                f"Organism '{intent.name}' died during growth (seed={seed}). "
-                f"Try a more descriptive prompt or a different seed."
-            )
-
-        # Calibration (optional — only when examples are provided)
-        decoder = None
-        calibrated = False
-        if normal_examples is not None:
-            try:
-                output_type = OutputType(mode)
-            except ValueError:
-                valid = [t.value for t in OutputType]
-                raise ValueError(
-                    f"Unknown decoder mode '{mode}'. Valid: {', '.join(valid)}"
-                )
-            runtime = OrganismRuntime.from_organism(organism)
-            decoder = OutputDecoder(mode=output_type)
-            decoder.calibrate_from_data(
-                runtime,
-                normal_data=normal_examples,
-                anomaly_data=anomaly_examples,
-                class_data=class_examples,
-            )
-            calibrated = decoder._calibrated
-            if not calibrated:
-                decoder = None  # calibration failed — don't bake uncalibrated decoder
-
-        # Packaging — decoder=None for uncalibrated, decoder=<OutputDecoder> bakes calibration in
-        boundary = package_organism(organism, decoder=decoder)
-
-        out_dir = Path(output_dir) if output_dir else (
-            Path.home() / ".et_modules" / "praxis" / "organisms"
+        return self._grow_from_intent(
+            intent, seed, output_dir, normal_examples, anomaly_examples, class_examples, mode
         )
-        out_dir.mkdir(parents=True, exist_ok=True)
-        morpho_path = str(out_dir / f"{intent.name}_{seed}.morpho")
 
-        save_morpho(boundary, morpho_path)
+    def refine(self, description: str) -> Tuple["ConversationState", List["ClarificationQuestion"]]:
+        """Begin a multi-turn refinement conversation.
 
-        info = inspect_morpho(morpho_path)
+        Runs hear() + clarify() on the description. Returns the mutable
+        ConversationState and any clarifying questions. Pass state to
+        answer() for each question, then grow_refined() to finalize.
 
-        return GrowResult(
-            morpho_path=morpho_path,
-            name=boundary.name,
-            behaviors=info.get("behaviors") or [],
-            fitness=info.get("fitness", 0.0),
-            alive=True,
-            fingerprint=boundary.fingerprint,
-            zone_graduations=info.get("zone_graduations", 0.0),
-            calibrated=calibrated,
+        Args:
+            description: Natural language description of desired behavior.
+
+        Returns:
+            (state, questions) — state is mutable; questions may be empty
+            if the description is unambiguous.
+        """
+        engine = PraxisEngine()
+        state = engine.hear(description)
+        questions = engine.clarify(state)
+        return state, questions
+
+    def answer(
+        self,
+        state: "ConversationState",
+        field: str,
+        answer_text: str,
+    ) -> List["ClarificationQuestion"]:
+        """Process an answer to a clarifying question.
+
+        Mutates state with the answer. Returns remaining unanswered questions
+        re-evaluated on the updated state — resolved questions drop off.
+
+        Args:
+            state:       ConversationState from refine().
+            field:       Which question field to answer ('behaviors', 'size', etc.)
+            answer_text: The answer string (e.g. "filter transform").
+
+        Returns:
+            List of remaining ClarificationQuestion objects.
+        """
+        engine = PraxisEngine()
+        engine.answer(state, field, answer_text)
+        answered_fields = {f for f, _ in state.clarifications_answered}
+        updated_questions = engine.clarify(state)
+        return [q for q in updated_questions if q.field not in answered_fields]
+
+    def grow_refined(
+        self,
+        state: "ConversationState",
+        seed: Optional[int] = None,
+        output_dir: Optional[str] = None,
+        normal_examples: Optional[List] = None,
+        anomaly_examples: Optional[List] = None,
+        class_examples: Optional[Dict] = None,
+        mode: str = "anomaly_score",
+    ) -> GrowResult:
+        """Finalize a refinement conversation and grow the organism.
+
+        Calls finalize() on the state to produce an OrganismIntent, then
+        grows. Accepts the same calibration parameters as grow().
+
+        Args:
+            state:            ConversationState after answering questions.
+            seed:             Random seed. Random if omitted.
+            output_dir:       Where to write the .morpho file.
+            normal_examples:  Data for calibration (optional).
+            anomaly_examples: Anomaly data for calibration (optional).
+            class_examples:   Class data for calibration (optional).
+            mode:             Decoder mode (default 'anomaly_score').
+
+        Returns:
+            GrowResult — same shape as grow().
+        """
+        if seed is None:
+            seed = int(np.random.default_rng().integers(0, 2**31))
+        engine = PraxisEngine()
+        intent = engine.finalize(state)
+        return self._grow_from_intent(
+            intent, seed, output_dir, normal_examples, anomaly_examples, class_examples, mode
         )

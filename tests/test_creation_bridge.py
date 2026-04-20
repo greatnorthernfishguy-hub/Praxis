@@ -169,6 +169,47 @@ class TestCreationBridge:
         runtime.stop()
 
 
+class TestCreationBridgeRefinement:
+    def test_refine_returns_state_and_questions(self):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        state, questions = bridge.refine("process data")
+        # "process data" has no behavior keywords → clarify() asks what it does
+        assert state is not None
+        assert isinstance(questions, list)
+        assert len(questions) > 0
+        assert hasattr(questions[0], 'question')
+        assert hasattr(questions[0], 'field')
+        assert hasattr(questions[0], 'options')
+
+    def test_answer_updates_state(self):
+        from core.creation_bridge import CreationBridge
+        from morphogenesis.intent import Behavior
+        bridge = CreationBridge()
+        state, _ = bridge.refine("process data")
+        remaining = bridge.answer(state, "behaviors", "filter transform")
+        assert Behavior.FILTER in state.extracted_behaviors
+        assert Behavior.TRANSFORM in state.extracted_behaviors
+        assert isinstance(remaining, list)
+
+    def test_grow_refined_uses_clarified_intent(self, tmp_path):
+        from core.creation_bridge import CreationBridge, GrowResult
+        bridge = CreationBridge()
+        state, _ = bridge.refine("process data")
+        bridge.answer(state, "behaviors", "filter")
+        result = bridge.grow_refined(state, seed=42, output_dir=str(tmp_path))
+        assert isinstance(result, GrowResult)
+        assert result.alive is True
+        assert "filter" in result.behaviors
+
+    def test_refine_clear_description_has_no_required_questions(self):
+        from core.creation_bridge import CreationBridge
+        bridge = CreationBridge()
+        state, questions = bridge.refine("filter and accumulate sensor readings")
+        required = [q for q in questions if q.required]
+        assert len(required) == 0, "Clear descriptions should not require clarification"
+
+
 class TestHookGrow:
     def test_hook_grow_returns_dict(self, tmp_path):
         from core.praxis_hook import PraxisHook
