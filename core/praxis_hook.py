@@ -22,6 +22,11 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — fix: clamp severity to 1.0 in grow() outcome recording
+#   What: severity=result.fitness → severity=min(1.0, result.fitness) in success record_outcome call
+#   Why:  Raw Lenia fitness energy is not normalized — values > 1.0 (observed ~9.2) produced
+#         outsized substrate reward signals. severity param expects 0.0–1.0 float.
+#   How:  min(1.0, result.fitness) clamps without losing the success/failure signal.
 # [2026-04-20] Claude Code (Sonnet 4.6) — Add grow() — Morphogenesis integration entry point
 #   What: grow(description, seed, output_dir) delegates to CreationBridge, records all 3 sensors.
 #   Why:  Praxis→Morphogenesis integration. NL description → .morpho file via one call.
@@ -581,7 +586,7 @@ class PraxisHook(OpenClawAdapter):
             ),
             outcome_type="review",
             success=True,
-            severity=result.fitness,
+            severity=min(1.0, result.fitness),
             layer_depth="architecture",
         )
 
