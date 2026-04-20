@@ -262,6 +262,63 @@ class TestHookGrow:
         assert result["calibrated"] is True
 
 
+class TestHookSession:
+    def test_start_conversation_returns_session_id_and_questions(self):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        result = hook.start_conversation("process data")
+        assert "session_id" in result
+        assert isinstance(result["session_id"], str)
+        assert len(result["session_id"]) > 0
+        assert "questions" in result
+        assert isinstance(result["questions"], list)
+        assert len(result["questions"]) > 0  # "process data" triggers clarification
+
+    def test_answer_question_updates_session(self):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        session = hook.start_conversation("process data")
+        sid = session["session_id"]
+        result = hook.answer_question(sid, "behaviors", "filter")
+        assert "session_id" in result
+        assert result["session_id"] == sid
+        assert "remaining_questions" in result
+
+    def test_answer_unknown_session_returns_error(self):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        result = hook.answer_question("nonexistent_session_id", "behaviors", "filter")
+        assert result["status"] == "error"
+
+    def test_grow_from_session_produces_morpho(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        import os
+        hook = PraxisHook()
+        session = hook.start_conversation("process data")
+        sid = session["session_id"]
+        hook.answer_question(sid, "behaviors", "filter transform")
+        result = hook.grow_from_session(sid, seed=42, output_dir=str(tmp_path))
+        assert result["status"] == "grown"
+        assert "morpho_path" in result
+        assert os.path.exists(result["morpho_path"])
+
+    def test_grow_from_session_cleans_up_session(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        session = hook.start_conversation("process data")
+        sid = session["session_id"]
+        hook.grow_from_session(sid, seed=42, output_dir=str(tmp_path))
+        # Session cleaned up — further answers should fail
+        result = hook.answer_question(sid, "behaviors", "filter")
+        assert result["status"] == "error"
+
+    def test_grow_from_unknown_session_returns_error(self, tmp_path):
+        from core.praxis_hook import PraxisHook
+        hook = PraxisHook()
+        result = hook.grow_from_session("nonexistent_id", seed=42, output_dir=str(tmp_path))
+        assert result["status"] == "error"
+
+
 class TestEndToEnd:
     """The full pipeline: describe → grow → package → inspect → instantiate → run."""
 

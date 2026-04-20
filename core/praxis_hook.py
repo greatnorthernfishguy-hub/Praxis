@@ -22,6 +22,12 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Add session-based refinement API
+#   What: start_conversation(), answer_question(), grow_from_session().
+#         _grow_sessions dict (UUID hex → ConversationState) on __init__.
+#         import uuid added.
+#   Why:  Expose PraxisEngine multi-turn clarification via hook dict API.
+#   How:  Sessions keyed by UUID hex; cleaned up after grow_from_session().
 # [2026-04-20] Claude Code (Sonnet 4.6) — Add calibration params to PraxisHook.grow()
 #   What: grow() now accepts normal_examples, anomaly_examples, class_examples, mode params.
 #         Passes them through to CreationBridge.grow(). Returns calibrated flag in result dict.
@@ -120,6 +126,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -251,6 +258,8 @@ class PraxisHook(OpenClawAdapter):
             target=self._pulse_loop, name="praxis-pulse", daemon=True
         )
         self._pulse_thread.start()
+
+        self._grow_sessions: Dict[str, Any] = {}
 
         logger.info(
             "[Praxis] Initialized — session=%s, autonomic=%s, tier=%d, pulse=%.0fs/%.0fs",
@@ -614,6 +623,164 @@ class PraxisHook(OpenClawAdapter):
             layer_depth="architecture",
         )
 
+        return {
+            "status": "grown",
+            "morpho_path": result.morpho_path,
+            "name": result.name,
+            "behaviors": result.behaviors,
+            "fitness": result.fitness,
+            "alive": result.alive,
+            "fingerprint": result.fingerprint,
+            "zone_graduations": result.zone_graduations,
+            "calibrated": result.calibrated,
+        }
+
+    def start_conversation(self, description: str) -> Dict[str, Any]:
+        """Begin a multi-turn refinement conversation.
+
+        Runs hear + clarify on the description. Returns a session ID
+        and clarifying questions. Answer questions with answer_question(),
+        then grow with grow_from_session().
+
+        Args:
+            description: Natural language description of desired behavior.
+
+        Returns:
+            Dict with 'session_id' (str) and 'questions' (list of dicts).
+            Each question dict has 'question', 'field', 'options', 'required'.
+            Returns {'status': 'failed'} if morphogenesis is not installed.
+        """
+        self.record_conversation(description)
+        try:
+            from core.creation_bridge import CreationBridge
+        except ImportError:
+            return {"status": "failed", "error": "morphogenesis not installed. Run: pip3 install -e /home/josh/Morphogenesis"}
+        try:
+            bridge = CreationBridge()
+            state, questions = bridge.refine(description)
+        except Exception as exc:
+            return {"status": "failed", "error": str(exc)}
+        session_id = uuid.uuid4().hex
+        self._grow_sessions[session_id] = state
+        return {
+            "session_id": session_id,
+            "questions": [
+                {
+                    "question": q.question,
+                    "field": q.field,
+                    "options": q.options,
+                    "required": q.required,
+                }
+                for q in questions
+            ],
+        }
+
+    def answer_question(self, session_id: str, field: str, answer: str) -> Dict[str, Any]:
+        """Answer a clarifying question for a refinement session.
+
+        Args:
+            session_id: Session ID from start_conversation().
+            field:      The question field to answer ('behaviors', 'size', etc.)
+            answer:     The answer string.
+
+        Returns:
+            Dict with 'session_id' and 'remaining_questions' (list of dicts).
+            Returns {'status': 'error'} if session_id is unknown.
+        """
+        state = self._grow_sessions.get(session_id)
+        if state is None:
+            return {"status": "error", "error": f"Session '{session_id}' not found"}
+        self.record_conversation(answer)
+        try:
+            from core.creation_bridge import CreationBridge
+        except ImportError:
+            return {"status": "failed", "error": "morphogenesis not installed"}
+        bridge = CreationBridge()
+        remaining = bridge.answer(state, field, answer)
+        return {
+            "session_id": session_id,
+            "remaining_questions": [
+                {
+                    "question": q.question,
+                    "field": q.field,
+                    "options": q.options,
+                    "required": q.required,
+                }
+                for q in remaining
+            ],
+        }
+
+    def grow_from_session(
+        self,
+        session_id: str,
+        seed: Optional[int] = None,
+        output_dir: Optional[str] = None,
+        normal_examples: Optional[List] = None,
+        anomaly_examples: Optional[List] = None,
+        class_examples: Optional[Dict] = None,
+        mode: str = "anomaly_score",
+    ) -> Dict[str, Any]:
+        """Finalize a refinement session and grow the organism.
+
+        Calls grow_refined() with the accumulated conversation state,
+        then cleans up the session. Returns the same shape as grow().
+
+        Args:
+            session_id:       Session ID from start_conversation().
+            seed:             Random seed. Random if omitted.
+            output_dir:       Where to write the .morpho file.
+            normal_examples:  Data for calibration (optional).
+            anomaly_examples: Anomaly data for calibration (optional).
+            class_examples:   Class data for calibration (optional).
+            mode:             Decoder mode (default 'anomaly_score').
+
+        Returns:
+            Dict with 'status', 'morpho_path', 'name', etc. (same shape as grow()).
+            Returns {'status': 'error'} if session_id is unknown.
+        """
+        state = self._grow_sessions.get(session_id)
+        if state is None:
+            return {"status": "error", "error": f"Session '{session_id}' not found"}
+        try:
+            from core.creation_bridge import CreationBridge
+        except ImportError:
+            return {"status": "failed", "error": "morphogenesis not installed. Run: pip3 install -e /home/josh/Morphogenesis"}
+        try:
+            bridge = CreationBridge()
+            result = bridge.grow_refined(
+                state,
+                seed=seed,
+                output_dir=output_dir,
+                normal_examples=normal_examples,
+                anomaly_examples=anomaly_examples,
+                class_examples=class_examples,
+                mode=mode,
+            )
+        except Exception as exc:
+            self.record_outcome(
+                context=f"Failed to grow from session '{session_id}': {exc}",
+                outcome_type="review",
+                success=False,
+                severity=0.6,
+                layer_depth="architecture",
+                metadata={"error": str(exc)},
+            )
+            return {"status": "failed", "error": str(exc)}
+        del self._grow_sessions[session_id]
+        self.record_artifact(
+            artifact_id=result.morpho_path,
+            content=f"Grown organism '{result.name}' via refinement session. Behaviors: {result.behaviors}",
+            artifact_type="morpho",
+            event_type="create",
+            layer_depth="architecture",
+        )
+        self.record_outcome(
+            context=f"Grew organism '{result.name}' via refinement. Fitness: {result.fitness:.4f}. Behaviors: {result.behaviors}",
+            outcome_type="review",
+            success=True,
+            severity=min(1.0, result.fitness),
+            layer_depth="architecture",
+        )
         return {
             "status": "grown",
             "morpho_path": result.morpho_path,
