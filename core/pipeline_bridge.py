@@ -5,6 +5,11 @@ the input of the next. Ships as a .pipeline file (gzip JSON with base64-
 encoded .morpho per stage) — deploy everywhere, grow once.
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Implement grow_pipeline()
+#   What: Full grow_pipeline() — list of NL descriptions → .pipeline file
+#   Why:  Task 2 of composed pipelines — grow each stage, embed as base64 gzip JSON
+#   How:  CreationBridge.grow() per stage; only last stage gets calibration args;
+#         stages packed into gzip JSON with base64-encoded .morpho bytes per stage
 # [2026-04-20] Claude Code (Sonnet 4.6) — Initial creation
 #   What: PipelineResult, OrganismPipeline, PipelineBridge stub
 #   Why:  Composed pipeline feature — chain organisms for multi-stage processing
@@ -29,8 +34,10 @@ try:
     from morphogenesis.holographic import load_morpho, instantiate_morpho
     from morphogenesis.runtime import OrganismRuntime
     from morphogenesis.output import OutputDecoder
+    from core.creation_bridge import CreationBridge
     _MORPHOGENESIS_AVAILABLE = True
 except ImportError:
+    CreationBridge = None  # type: ignore[assignment,misc]
     _MORPHOGENESIS_AVAILABLE = False
 
 
@@ -119,7 +126,97 @@ class PipelineBridge:
         mode: str = "anomaly_score",
         name: Optional[str] = None,
     ) -> "PipelineResult":
-        raise NotImplementedError
+        """Grow each stage and assemble into a .pipeline file.
+
+        Only the final stage is calibrated. Intermediate stages do raw
+        processing whose output feeds the next stage's input.
+
+        Args:
+            descriptions:     List of NL descriptions, one per stage.
+            seeds:            Random seeds, one per stage. Random if omitted.
+            output_dir:       Where to write the .pipeline file.
+            normal_examples:  Data for final-stage calibration (optional).
+            anomaly_examples: Anomaly data for final-stage calibration.
+            class_examples:   Class data for final-stage calibration.
+            mode:             Decoder mode for final stage.
+            name:             Pipeline name. Defaults to stage names joined by →.
+
+        Returns:
+            PipelineResult with pipeline_path and per-stage metadata.
+
+        Raises:
+            ValueError: If descriptions is empty, seeds length mismatches, or
+                        any stage organism dies (propagated from CreationBridge).
+        """
+        if not descriptions:
+            raise ValueError("descriptions must be non-empty")
+
+        import numpy as np
+
+        if seeds is None:
+            rng = np.random.default_rng()
+            seeds = [int(rng.integers(0, 2**31)) for _ in descriptions]
+        elif len(seeds) != len(descriptions):
+            raise ValueError(
+                f"seeds length ({len(seeds)}) must match descriptions length ({len(descriptions)})"
+            )
+
+        bridge = CreationBridge()
+        stage_results = []
+
+        for i, (desc, seed) in enumerate(zip(descriptions, seeds)):
+            is_last = (i == len(descriptions) - 1)
+            result = bridge.grow(
+                desc,
+                seed=seed,
+                output_dir=output_dir,
+                normal_examples=normal_examples if is_last else None,
+                anomaly_examples=anomaly_examples if is_last else None,
+                class_examples=class_examples if is_last else None,
+                mode=mode,
+            )
+            stage_results.append(result)
+
+        pipeline_name = name or " → ".join(r.name for r in stage_results)
+
+        stages_payload = []
+        for r in stage_results:
+            with open(r.morpho_path, "rb") as fh:
+                morpho_bytes = fh.read()
+            stages_payload.append({
+                "name": r.name,
+                "morpho_b64": base64.b64encode(morpho_bytes).decode("ascii"),
+                "behaviors": r.behaviors,
+                "fitness": r.fitness,
+                "calibrated": r.calibrated,
+            })
+
+        payload = {
+            "version": "1.0",
+            "name": pipeline_name,
+            "created_at": time.time(),
+            "stages": stages_payload,
+        }
+
+        out_dir = Path(output_dir) if output_dir else (
+            Path.home() / ".et_modules" / "praxis" / "pipelines"
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = pipeline_name.replace(" → ", "_to_").replace(" ", "_")
+        pipeline_path = str(out_dir / f"{safe_name}.pipeline")
+
+        with gzip.open(pipeline_path, "wb") as fh:
+            fh.write(json.dumps(payload).encode("utf-8"))
+
+        return PipelineResult(
+            pipeline_path=pipeline_path,
+            name=pipeline_name,
+            stage_names=[r.name for r in stage_results],
+            stage_morpho_paths=[r.morpho_path for r in stage_results],
+            stage_behaviors=[r.behaviors for r in stage_results],
+            stage_fitnesses=[r.fitness for r in stage_results],
+            calibrated=stage_results[-1].calibrated,
+        )
 
     def load_pipeline(self, pipeline_path: str) -> "OrganismPipeline":
         raise NotImplementedError
