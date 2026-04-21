@@ -5,6 +5,12 @@ the input of the next. Ships as a .pipeline file (gzip JSON with base64-
 encoded .morpho per stage) — deploy everywhere, grow once.
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Implement load_pipeline()
+#   What: load_pipeline() reads gzip JSON, decodes base64 .morpho per stage,
+#         writes to temp file, calls instantiate_morpho(), cleans up temp files
+#   Why:  Task 3 — load stored pipeline and return runnable OrganismPipeline
+#   How:  gzip.open → json → base64.b64decode → NamedTemporaryFile → instantiate_morpho
+#         temp file deleted in finally block regardless of instantiate_morpho outcome
 # [2026-04-20] Claude Code (Sonnet 4.6) — Implement grow_pipeline()
 #   What: Full grow_pipeline() — list of NL descriptions → .pipeline file
 #   Why:  Task 2 of composed pipelines — grow each stage, embed as base64 gzip JSON
@@ -219,4 +225,38 @@ class PipelineBridge:
         )
 
     def load_pipeline(self, pipeline_path: str) -> "OrganismPipeline":
-        raise NotImplementedError
+        """Load a .pipeline file and instantiate all stages.
+
+        Reads the gzip JSON, decodes each stage's base64 .morpho bytes to a
+        temp file, calls instantiate_morpho() to get (organism, decoder, runtime),
+        cleans up temp files, and returns a ready-to-run OrganismPipeline.
+
+        Args:
+            pipeline_path: Path to the .pipeline file.
+
+        Returns:
+            OrganismPipeline ready to start() and run().
+        """
+        with gzip.open(pipeline_path, "rb") as fh:
+            payload = json.loads(fh.read().decode("utf-8"))
+
+        stages = []
+        names = []
+
+        for stage_data in payload["stages"]:
+            morpho_bytes = base64.b64decode(stage_data["morpho_b64"])
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".morpho", delete=False) as tmp:
+                    tmp.write(morpho_bytes)
+                    tmp_path = tmp.name
+                boundary = load_morpho(tmp_path)
+                organism, decoder, runtime = instantiate_morpho(boundary)
+            finally:
+                if tmp_path is not None:
+                    Path(tmp_path).unlink(missing_ok=True)
+
+            stages.append((runtime, decoder))
+            names.append(stage_data["name"])
+
+        return OrganismPipeline(stages=stages, names=names)

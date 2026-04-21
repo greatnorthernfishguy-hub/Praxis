@@ -175,13 +175,13 @@ class TestOrganismPipeline:
 # ---------------------------------------------------------------------------
 
 class TestPipelineBridgeStub:
-    def test_load_pipeline_raises_not_implemented(self):
+    def test_load_pipeline_raises_on_missing_file(self):
         import core.pipeline_bridge as pb
         with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True):
             from core.pipeline_bridge import PipelineBridge
             bridge = PipelineBridge()
-            with pytest.raises(NotImplementedError):
-                bridge.load_pipeline("/tmp/fake.pipeline")
+            with pytest.raises((FileNotFoundError, OSError)):
+                bridge.load_pipeline("/tmp/nonexistent_pipeline_xyz.pipeline")
 
     def test_init_raises_when_morphogenesis_unavailable(self):
         import core.pipeline_bridge as pb
@@ -355,3 +355,199 @@ class TestPipelineBridgeGrow:
             )
 
         assert result.name == "my_custom_pipeline"
+
+
+# ---------------------------------------------------------------------------
+# TestPipelineBridgeLoad
+# ---------------------------------------------------------------------------
+
+class TestPipelineBridgeLoad:
+    """Tests for PipelineBridge.load_pipeline()."""
+
+    def _write_fake_pipeline(self, tmp_path, n_stages: int = 2) -> str:
+        """Write a minimal .pipeline file with fake .morpho bytes."""
+        stages = []
+        for i in range(n_stages):
+            stages.append({
+                "name": f"stage_{i}",
+                "morpho_b64": base64.b64encode(f"MORPHO_{i}".encode()).decode("ascii"),
+                "behaviors": ["filter"],
+                "fitness": 0.8,
+                "calibrated": (i == n_stages - 1),
+            })
+        payload = {
+            "version": "1.0",
+            "name": "test_pipeline",
+            "created_at": 1234567890.0,
+            "stages": stages,
+        }
+        pipeline_path = str(tmp_path / "test.pipeline")
+        with gzip.open(pipeline_path, "wb") as fh:
+            fh.write(json.dumps(payload).encode("utf-8"))
+        return pipeline_path
+
+    def test_load_pipeline_returns_organism_pipeline(self, tmp_path):
+        import core.pipeline_bridge as pb
+        from core.pipeline_bridge import OrganismPipeline
+
+        pipeline_path = self._write_fake_pipeline(tmp_path, n_stages=2)
+        mock_runtime = MagicMock()
+        mock_decoder = MagicMock()
+
+        # instantiate_morpho returns (organism, decoder, runtime) per stage
+        mock_instantiate = MagicMock(side_effect=[
+            (MagicMock(), None, mock_runtime),
+            (MagicMock(), mock_decoder, mock_runtime),
+        ])
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch.object(pb, "load_morpho", return_value=MagicMock()), \
+             patch.object(pb, "instantiate_morpho", mock_instantiate):
+            from core.pipeline_bridge import PipelineBridge
+            bridge = PipelineBridge()
+            pipeline = bridge.load_pipeline(pipeline_path)
+
+        assert isinstance(pipeline, OrganismPipeline)
+
+    def test_load_pipeline_stage_count(self, tmp_path):
+        import core.pipeline_bridge as pb
+
+        pipeline_path = self._write_fake_pipeline(tmp_path, n_stages=3)
+        mock_instantiate = MagicMock(side_effect=[
+            (MagicMock(), None, MagicMock()),
+            (MagicMock(), None, MagicMock()),
+            (MagicMock(), MagicMock(), MagicMock()),
+        ])
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch.object(pb, "load_morpho", return_value=MagicMock()), \
+             patch.object(pb, "instantiate_morpho", mock_instantiate):
+            from core.pipeline_bridge import PipelineBridge
+            bridge = PipelineBridge()
+            pipeline = bridge.load_pipeline(pipeline_path)
+
+        assert len(pipeline._stages) == 3
+        assert mock_instantiate.call_count == 3
+
+    def test_load_pipeline_names_preserved(self, tmp_path):
+        import core.pipeline_bridge as pb
+
+        pipeline_path = self._write_fake_pipeline(tmp_path, n_stages=2)
+        mock_instantiate = MagicMock(side_effect=[
+            (MagicMock(), None, MagicMock()),
+            (MagicMock(), None, MagicMock()),
+        ])
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch.object(pb, "load_morpho", return_value=MagicMock()), \
+             patch.object(pb, "instantiate_morpho", mock_instantiate):
+            from core.pipeline_bridge import PipelineBridge
+            bridge = PipelineBridge()
+            pipeline = bridge.load_pipeline(pipeline_path)
+
+        assert pipeline._names == ["stage_0", "stage_1"]
+
+    def test_load_pipeline_cleans_up_temp_files(self, tmp_path):
+        """Temp .morpho files written during load must be deleted after."""
+        import core.pipeline_bridge as pb
+
+        pipeline_path = self._write_fake_pipeline(tmp_path, n_stages=1)
+        created_temps = []
+
+        original_load_morpho = MagicMock(return_value=MagicMock())
+
+        def tracking_instantiate(boundary):
+            # Count temp .morpho files in /tmp that match our pattern
+            temps = list(Path(tempfile.gettempdir()).glob("*.morpho"))
+            created_temps.extend(temps)
+            return (MagicMock(), None, MagicMock())
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch.object(pb, "load_morpho", original_load_morpho), \
+             patch.object(pb, "instantiate_morpho", side_effect=tracking_instantiate):
+            from core.pipeline_bridge import PipelineBridge
+            bridge = PipelineBridge()
+            bridge.load_pipeline(pipeline_path)
+
+        # After load, temp files should be gone
+        for tmp_file in created_temps:
+            assert not tmp_file.exists(), f"Temp file not cleaned up: {tmp_file}"
+
+
+# ---------------------------------------------------------------------------
+# TestPipelineIntegration
+# ---------------------------------------------------------------------------
+
+class TestPipelineIntegration:
+    """End-to-end grow → load → run tests with mocked morphogenesis."""
+
+    def test_grow_then_load_produces_runnable_pipeline(self, tmp_path):
+        """Grow a 2-stage pipeline, load it, run data through — all mocked."""
+        import core.pipeline_bridge as pb
+
+        # --- Setup fake .morpho files on disk ---
+        morpho_a = str(tmp_path / "stage_a_1.morpho")
+        morpho_b = str(tmp_path / "stage_b_2.morpho")
+        Path(morpho_a).write_bytes(b"MORPHO_A")
+        Path(morpho_b).write_bytes(b"MORPHO_B")
+
+        grow_a = MagicMock()
+        grow_a.name = "stage_a"
+        grow_a.morpho_path = morpho_a
+        grow_a.behaviors = ["filter"]
+        grow_a.fitness = 0.85
+        grow_a.alive = True
+        grow_a.fingerprint = "fp1"
+        grow_a.zone_graduations = 0.9
+        grow_a.calibrated = False
+
+        grow_b = MagicMock()
+        grow_b.name = "stage_b"
+        grow_b.morpho_path = morpho_b
+        grow_b.behaviors = ["classify"]
+        grow_b.fitness = 0.92
+        grow_b.alive = True
+        grow_b.fingerprint = "fp2"
+        grow_b.zone_graduations = 0.95
+        grow_b.calibrated = True
+
+        mock_creation_bridge = MagicMock()
+        mock_creation_bridge.grow.side_effect = [grow_a, grow_b]
+
+        # --- Runtimes for load step ---
+        intermediate_out = np.array([0.3, 0.4])
+        rt_a = MagicMock()
+        rt_a.process.return_value = intermediate_out
+        rt_b = MagicMock()
+        decoder_b = MagicMock()
+        final_output = MagicMock(score=0.95)
+        rt_b.predict.return_value = final_output
+
+        mock_instantiate = MagicMock(side_effect=[
+            (MagicMock(), None, rt_a),
+            (MagicMock(), decoder_b, rt_b),
+        ])
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch("core.pipeline_bridge.CreationBridge", return_value=mock_creation_bridge), \
+             patch.object(pb, "load_morpho", return_value=MagicMock()), \
+             patch.object(pb, "instantiate_morpho", mock_instantiate):
+            from core.pipeline_bridge import PipelineBridge
+
+            bridge = PipelineBridge()
+            result = bridge.grow_pipeline(
+                ["filter noise", "classify signal"],
+                seeds=[1, 2],
+                output_dir=str(tmp_path),
+            )
+
+            pipeline = bridge.load_pipeline(result.pipeline_path)
+            pipeline.start()
+            output = pipeline.run(np.array([1.0, 2.0]))
+            pipeline.stop()
+
+        # Stage A processed the input
+        rt_a.process.assert_called_once()
+        # Stage B got stage A's output and used the decoder
+        rt_b.predict.assert_called_once_with(intermediate_out, decoder_b)
+        assert output is final_output
