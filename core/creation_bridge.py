@@ -7,6 +7,12 @@ The .morpho file is a holographic boundary — a self-contained install
 package that regrows the organism on any machine. No source code ships.
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Fix: answer() trusts clarify() re-evaluation
+#   What: answer() simplified — removed answered-fields filter. Now returns engine.clarify(state) directly.
+#         Trust clarify() to re-evaluate from current state rather than filtering by answered fields.
+#   Why:  The filter incorrectly hid re-asks when a bad answer didn't update state.
+#   How:  engine.clarify(state) re-evaluates from current state naturally — resolved questions
+#         drop off because their trigger conditions are gone; unresolved ones reappear correctly.
 # [2026-04-20] Claude Code (Sonnet 4.6) — Add multi-turn refinement to CreationBridge
 #   What: refine(), answer(), grow_refined() methods. _grow_from_intent() factored out
 #         so grow() and grow_refined() share growth logic.
@@ -243,8 +249,10 @@ class CreationBridge:
     ) -> List["ClarificationQuestion"]:
         """Process an answer to a clarifying question.
 
-        Mutates state with the answer. Returns remaining unanswered questions
-        re-evaluated on the updated state — resolved questions drop off.
+        Mutates state with the answer. Returns the current clarifying questions
+        re-evaluated on the updated state — correctly-answered questions drop
+        off because the state conditions no longer trigger them. Incorrectly-
+        answered questions (unrecognized keywords) are re-asked.
 
         Args:
             state:       ConversationState from refine().
@@ -252,13 +260,11 @@ class CreationBridge:
             answer_text: The answer string (e.g. "filter transform").
 
         Returns:
-            List of remaining ClarificationQuestion objects.
+            List of current ClarificationQuestion objects after the answer.
         """
         engine = PraxisEngine()
         engine.answer(state, field, answer_text)
-        answered_fields = {f for f, _ in state.clarifications_answered}
-        updated_questions = engine.clarify(state)
-        return [q for q in updated_questions if q.field not in answered_fields]
+        return engine.clarify(state)
 
     def grow_refined(
         self,

@@ -765,6 +765,8 @@ class PraxisHook(OpenClawAdapter):
                 layer_depth="architecture",
                 metadata={"error": str(exc)},
             )
+            # Session survives on failure — caller can retry grow_from_session()
+            # without re-answering questions.
             return {"status": "failed", "error": str(exc)}
         del self._grow_sessions[session_id]
         self.record_artifact(
