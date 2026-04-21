@@ -836,8 +836,9 @@ class PraxisHook(OpenClawAdapter):
 
         Returns:
             Dict with 'status', 'pipeline_path', 'name', 'stage_names',
-            'stage_fitnesses', 'calibrated'. Status is 'grown' on success,
-            'failed' on error (with 'error' key).
+            'stage_morpho_paths', 'stage_behaviors', 'stage_fitnesses',
+            'calibrated'. Status is 'grown' on success, 'failed' on error
+            (with 'error' key).
         """
         self.record_conversation(" | ".join(descriptions))
 
