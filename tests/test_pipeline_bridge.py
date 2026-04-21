@@ -551,3 +551,98 @@ class TestPipelineIntegration:
         # Stage B got stage A's output and used the decoder
         rt_b.predict.assert_called_once_with(intermediate_out, decoder_b)
         assert output is final_output
+
+
+class TestHookGrowPipeline:
+    """Tests for PraxisHook.grow_pipeline()."""
+
+    def _make_pipeline_result(self, tmp_path) -> "PipelineResult":
+        from core.pipeline_bridge import PipelineResult
+        return PipelineResult(
+            pipeline_path=str(tmp_path / "test.pipeline"),
+            name="filter → classify",
+            stage_names=["filter", "classify"],
+            stage_morpho_paths=[str(tmp_path / "a.morpho"), str(tmp_path / "b.morpho")],
+            stage_behaviors=[["filter"], ["classify"]],
+            stage_fitnesses=[0.85, 0.92],
+            calibrated=True,
+        )
+
+    def test_grow_pipeline_returns_status_dict(self, tmp_path):
+        """grow_pipeline() returns a dict with 'status' and pipeline metadata."""
+        import core.pipeline_bridge as pb
+        from core.praxis_hook import PraxisHook
+
+        pipeline_result = self._make_pipeline_result(tmp_path)
+        mock_pipeline_bridge = MagicMock()
+        mock_pipeline_bridge.grow_pipeline.return_value = pipeline_result
+
+        hook = MagicMock(spec=PraxisHook)
+        hook.grow_pipeline = PraxisHook.grow_pipeline.__get__(hook, PraxisHook)
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch("core.praxis_hook.PipelineBridge", return_value=mock_pipeline_bridge):
+            hook.record_conversation = MagicMock(return_value={"status": "captured"})
+            hook.record_artifact = MagicMock(return_value={"status": "recorded"})
+            hook.record_outcome = MagicMock(return_value={"status": "recorded"})
+
+            result = hook.grow_pipeline(
+                descriptions=["filter noise", "classify signal"],
+                seeds=[1, 2],
+            )
+
+        assert result["status"] == "grown"
+        assert result["pipeline_path"] == pipeline_result.pipeline_path
+        assert result["name"] == "filter → classify"
+        assert result["stage_names"] == ["filter", "classify"]
+        assert result["stage_fitnesses"] == [0.85, 0.92]
+        assert result["calibrated"] is True
+
+    def test_grow_pipeline_records_artifact_and_outcome(self, tmp_path):
+        """grow_pipeline() records the .pipeline as artifact and logs outcome."""
+        import core.pipeline_bridge as pb
+        from core.praxis_hook import PraxisHook
+
+        pipeline_result = self._make_pipeline_result(tmp_path)
+        mock_pipeline_bridge = MagicMock()
+        mock_pipeline_bridge.grow_pipeline.return_value = pipeline_result
+
+        hook = MagicMock(spec=PraxisHook)
+        hook.grow_pipeline = PraxisHook.grow_pipeline.__get__(hook, PraxisHook)
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch("core.praxis_hook.PipelineBridge", return_value=mock_pipeline_bridge):
+            hook.record_conversation = MagicMock(return_value={"status": "captured"})
+            hook.record_artifact = MagicMock(return_value={"status": "recorded"})
+            hook.record_outcome = MagicMock(return_value={"status": "recorded"})
+
+            hook.grow_pipeline(descriptions=["filter noise", "classify signal"])
+
+        hook.record_artifact.assert_called_once()
+        artifact_kwargs = hook.record_artifact.call_args
+        assert artifact_kwargs[1]["artifact_type"] == "pipeline"
+
+        hook.record_outcome.assert_called_once()
+        outcome_kwargs = hook.record_outcome.call_args
+        assert outcome_kwargs[1]["success"] is True
+
+    def test_grow_pipeline_returns_failed_on_exception(self):
+        """grow_pipeline() returns {'status': 'failed'} when PipelineBridge raises."""
+        import core.pipeline_bridge as pb
+        from core.praxis_hook import PraxisHook
+
+        mock_pipeline_bridge = MagicMock()
+        mock_pipeline_bridge.grow_pipeline.side_effect = ValueError("organism died")
+
+        hook = MagicMock(spec=PraxisHook)
+        hook.grow_pipeline = PraxisHook.grow_pipeline.__get__(hook, PraxisHook)
+
+        with patch.object(pb, "_MORPHOGENESIS_AVAILABLE", True), \
+             patch("core.praxis_hook.PipelineBridge", return_value=mock_pipeline_bridge):
+            hook.record_conversation = MagicMock(return_value={"status": "captured"})
+            hook.record_outcome = MagicMock(return_value={"status": "recorded"})
+
+            result = hook.grow_pipeline(descriptions=["filter noise"])
+
+        assert result["status"] == "failed"
+        assert "organism died" in result["error"]
