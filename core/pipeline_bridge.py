@@ -5,6 +5,11 @@ the input of the next. Ships as a .pipeline file (gzip JSON with base64-
 encoded .morpho per stage) — deploy everywhere, grow once.
 
 # ---- Changelog ----
+# [2026-04-20] Claude Code (Sonnet 4.6) — Fix: remove unused imports, sanitize safe_name
+#   What: Removed OrganismRuntime and OutputDecoder (unused in this module).
+#         safe_name now uses re.sub to strip all filesystem-hostile chars (/,:,etc.)
+#   Why:  Cleanup from holistic review — unused imports and path injection risk
+#   How:  Drop two import lines; replace .replace() chain with re.sub to strip hostile chars
 # [2026-04-20] Claude Code (Sonnet 4.6) — Implement load_pipeline()
 #   What: load_pipeline() reads gzip JSON, decodes base64 .morpho per stage,
 #         writes to temp file, calls instantiate_morpho(), cleans up temp files
@@ -29,6 +34,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -38,8 +44,6 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     import morphogenesis
     from morphogenesis.holographic import load_morpho, instantiate_morpho
-    from morphogenesis.runtime import OrganismRuntime
-    from morphogenesis.output import OutputDecoder
     from core.creation_bridge import CreationBridge
     _MORPHOGENESIS_AVAILABLE = True
 except ImportError:
@@ -208,7 +212,7 @@ class PipelineBridge:
             Path.home() / ".et_modules" / "praxis" / "pipelines"
         )
         out_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = pipeline_name.replace(" → ", "_to_").replace(" ", "_")
+        safe_name = re.sub(r"[^\w_\-]", "_", pipeline_name.replace(" → ", "_to_"))
         pipeline_path = str(out_dir / f"{safe_name}.pipeline")
 
         with gzip.open(pipeline_path, "wb") as fh:
