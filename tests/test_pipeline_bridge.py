@@ -5,9 +5,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
-import sys
 import tempfile
-from dataclasses import fields
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -165,6 +163,11 @@ class TestOrganismPipeline:
 
         rt1.stop.assert_called_once()
         rt2.stop.assert_called_once()
+
+    def test_run_empty_stages_raises(self):
+        from core.pipeline_bridge import OrganismPipeline
+        with pytest.raises(ValueError, match="requires at least one stage"):
+            OrganismPipeline(stages=[], names=[])
 
 
 # ---------------------------------------------------------------------------

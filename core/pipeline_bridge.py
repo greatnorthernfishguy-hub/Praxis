@@ -20,7 +20,7 @@ import gzip
 import json
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,6 +58,8 @@ class OrganismPipeline:
         stages: List[Tuple[Any, Optional[Any]]],
         names: List[str],
     ) -> None:
+        if not stages:
+            raise ValueError("OrganismPipeline requires at least one stage")
         self._stages = stages
         self._names = names
 
