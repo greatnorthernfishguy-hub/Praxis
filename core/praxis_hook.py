@@ -22,13 +22,6 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
-# [2026-04-20] Claude Code (Sonnet 4.6) — Add grow_pipeline() — composed pipeline integration
-#   What: grow_pipeline(descriptions, seeds, output_dir, normal_examples, anomaly_examples,
-#         class_examples, mode) delegates to PipelineBridge; records pipeline as artifact,
-#         logs outcome. Returns dict with status, pipeline_path, name, stage metadata.
-#   Why:  Expose multi-stage organism composition via the same hook API as grow().
-#   How:  PipelineBridge.grow_pipeline() for growth; record_artifact for .pipeline file;
-#         record_outcome for success/failure. Mirrors grow() sensor pattern exactly.
 # [2026-04-20] Claude Code (Sonnet 4.6) — Add session-based refinement API
 #   What: start_conversation(), answer_question(), grow_from_session().
 #         _grow_sessions dict (UUID hex → ConversationState) on __init__.
@@ -140,11 +133,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from openclaw_adapter import OpenClawAdapter
-
-try:
-    from core.pipeline_bridge import PipelineBridge
-except ImportError:
-    PipelineBridge = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("praxis")
 
@@ -804,103 +792,6 @@ class PraxisHook(OpenClawAdapter):
             "alive": result.alive,
             "fingerprint": result.fingerprint,
             "zone_graduations": result.zone_graduations,
-            "calibrated": result.calibrated,
-        }
-
-    def grow_pipeline(
-        self,
-        descriptions: List[str],
-        seeds: Optional[List[int]] = None,
-        output_dir: Optional[str] = None,
-        normal_examples: Optional[List] = None,
-        anomaly_examples: Optional[List] = None,
-        class_examples: Optional[Dict] = None,
-        mode: str = "anomaly_score",
-    ) -> Dict[str, Any]:
-        """Grow a multi-stage organism pipeline from a list of descriptions.
-
-        Each description becomes one stage. The output of each stage feeds
-        the input of the next. Only the final stage is calibrated.
-
-        The returned .pipeline file embeds all stage organisms — deploy
-        everywhere, grow once. Load with PipelineBridge.load_pipeline().
-
-        Args:
-            descriptions:     List of NL descriptions, one per stage.
-            seeds:            Random seeds, one per stage. Random if omitted.
-            output_dir:       Where to write the .pipeline file.
-            normal_examples:  Data for final-stage calibration (optional).
-            anomaly_examples: Anomaly data for final-stage calibration.
-            class_examples:   Class data for final-stage calibration.
-            mode:             Decoder mode for final stage.
-
-        Returns:
-            Dict with 'status', 'pipeline_path', 'name', 'stage_names',
-            'stage_morpho_paths', 'stage_behaviors', 'stage_fitnesses',
-            'calibrated'. Status is 'grown' on success, 'failed' on error
-            (with 'error' key).
-        """
-        self.record_conversation(" | ".join(descriptions))
-
-        if PipelineBridge is None:
-            return {
-                "status": "failed",
-                "error": "morphogenesis not installed — run: pip3 install -e /home/josh/Morphogenesis",
-            }
-
-        try:
-            bridge = PipelineBridge()
-            result = bridge.grow_pipeline(
-                descriptions,
-                seeds=seeds,
-                output_dir=output_dir,
-                normal_examples=normal_examples,
-                anomaly_examples=anomaly_examples,
-                class_examples=class_examples,
-                mode=mode,
-            )
-        except Exception as exc:
-            self.record_outcome(
-                context=f"Failed to grow pipeline from: {' | '.join(d[:80] for d in descriptions)}",
-                outcome_type="review",
-                success=False,
-                severity=0.6,
-                layer_depth="architecture",
-                metadata={"error": str(exc)},
-            )
-            return {"status": "failed", "error": str(exc)}
-
-        self.record_artifact(
-            artifact_id=result.pipeline_path,
-            content=(
-                f"Grown pipeline '{result.name}' — stages: {result.stage_names}, "
-                f"fitnesses: {result.stage_fitnesses}, calibrated: {result.calibrated}"
-            ),
-            artifact_type="pipeline",
-            event_type="create",
-            layer_depth="architecture",
-        )
-
-        avg_fitness = sum(result.stage_fitnesses) / len(result.stage_fitnesses)
-        self.record_outcome(
-            context=(
-                f"Grew pipeline '{result.name}' with {len(result.stage_names)} stages. "
-                f"Avg fitness: {avg_fitness:.3f}. Packaged at: {result.pipeline_path}"
-            ),
-            outcome_type="review",
-            success=True,
-            severity=min(1.0, avg_fitness),
-            layer_depth="architecture",
-        )
-
-        return {
-            "status": "grown",
-            "pipeline_path": result.pipeline_path,
-            "name": result.name,
-            "stage_names": result.stage_names,
-            "stage_morpho_paths": result.stage_morpho_paths,
-            "stage_behaviors": result.stage_behaviors,
-            "stage_fitnesses": result.stage_fitnesses,
             "calibrated": result.calibrated,
         }
 
