@@ -22,6 +22,17 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-23] Claude Code (Sonnet 4.6) — Autonomic creation intent detection
+#   What: _check_creation_intent() watches every inbound conversation turn for
+#         creation requests. Multi-turn clarification via LLM (OpenAI-compat).
+#         Grows in background thread when questions resolved.
+#         is_creation_request() + CREATION_TRIGGERS added to morphogenesis/praxis.py.
+#   Why:  Praxis should detect creation intent from its own substrate without
+#         needing an external caller. Option 2 architecture — autonomous.
+#   How:  After raw substrate deposit in _ingest_conversation, call
+#         _check_creation_intent(text). State machine tracks pending session.
+#         LLM call (PRAXIS_LLM_URL/MODEL, default OpenRouter) runs in daemon
+#         thread so River drain is never blocked. Swap to TID: set PRAXIS_LLM_URL.
 # [2026-04-20] Claude Code (Sonnet 4.6) — Add session-based refinement API
 #   What: start_conversation(), answer_question(), grow_from_session().
 #         _grow_sessions dict (UUID hex → ConversationState) on __init__.
@@ -122,6 +133,7 @@ License: AGPL-3.0
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -129,6 +141,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import requests
 
 import numpy as np
 
@@ -260,6 +274,10 @@ class PraxisHook(OpenClawAdapter):
         self._pulse_thread.start()
 
         self._grow_sessions: Dict[str, Any] = {}
+
+        # Autonomic creation state — one active creation conversation at a time
+        self._pending_creation: Optional[Dict] = None
+        self._pending_creation_lock = threading.Lock()
 
         logger.info(
             "[Praxis] Initialized — session=%s, autonomic=%s, tier=%d, pulse=%.0fs/%.0fs",
@@ -447,6 +465,9 @@ class PraxisHook(OpenClawAdapter):
             self._checkpoint()
             self._last_checkpoint = now
 
+        # Autonomic creation intent — raw experience already in substrate (Law 7)
+        self._check_creation_intent(text)
+
     # -----------------------------------------------------------------
     # Conversation recording (PRD §4.1 — standalone/dev mode)
     # -----------------------------------------------------------------
@@ -525,6 +546,134 @@ class PraxisHook(OpenClawAdapter):
             "signal_id": signal.signal_id,
             "temporal_bindings": bindings,
         }
+
+    # -----------------------------------------------------------------
+    # -----------------------------------------------------------------
+    # Autonomic creation intent detection
+    # -----------------------------------------------------------------
+
+    def _llm_call(self, messages: List[Dict]) -> str:
+        """OpenAI-compatible chat completion. Swap PRAXIS_LLM_URL to TID when live."""
+        url = os.environ.get('PRAXIS_LLM_URL', 'https://openrouter.ai/api/v1').rstrip('/') + '/chat/completions'
+        key = os.environ.get('PRAXIS_LLM_KEY') or os.environ.get('OPENROUTER_KEY', '')
+        model = os.environ.get('PRAXIS_LLM_MODEL', 'nousresearch/hermes-4-405b')
+        resp = requests.post(
+            url,
+            headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+            json={'model': model, 'messages': messages, 'max_tokens': 150},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        return resp.json()['choices'][0]['message']['content'].strip()
+
+    def _deposit_praxis_response(self, text: str) -> None:
+        """Deposit a Praxis-generated question/response to the substrate."""
+        try:
+            emb = self._embed(text)
+            if self._eco:
+                self._eco.dual_record_outcome(
+                    content=text,
+                    embedding=emb,
+                    target_id=f'praxis_response:{time.time():.0f}',
+                    success=True,
+                    metadata={'pheromone': 'praxis_response', 'source': 'creation_clarification'},
+                )
+            logger.info("[Praxis] Creation clarification → substrate: %s", text[:120])
+        except Exception as exc:
+            logger.debug("[Praxis] Response deposit failed: %s", exc)
+
+    def _ask_via_llm(self, state: Any, question: Any) -> None:
+        """Ask a clarifying question via LLM in a daemon thread (non-blocking)."""
+        def _thread():
+            try:
+                messages = [
+                    {'role': 'system', 'content': (
+                        'You are helping clarify a request to grow a software organism. '
+                        'Ask the user exactly one short, conversational question. '
+                        'No preamble. No explanation.'
+                    )},
+                    {'role': 'user', 'content': (
+                        f'Description: {state.description}\n'
+                        f'Clarifying question: {question.question}\n'
+                        f'Suggested options: {", ".join(question.options)}\n\n'
+                        'Reformulate as a single natural question.'
+                    )},
+                ]
+                response = self._llm_call(messages)
+                self._deposit_praxis_response(response)
+            except Exception as exc:
+                logger.warning("[Praxis] LLM clarification failed: %s", exc)
+                # Fall back to depositing the raw question
+                self._deposit_praxis_response(question.question)
+        threading.Thread(target=_thread, daemon=True, name='praxis-clarify').start()
+
+    def _fire_grow(self, intent: Any) -> None:
+        """Grow organism from a finalized intent in a daemon thread."""
+        def _thread():
+            try:
+                result = self.grow(intent.description, seed=int(time.time()) % 100_000)
+                logger.info(
+                    "[Praxis] Autonomic grow complete: name=%s fitness=%.3f",
+                    result.get('name', '?'), result.get('fitness', 0.0),
+                )
+            except Exception as exc:
+                logger.warning("[Praxis] Autonomic grow failed: %s", exc)
+        threading.Thread(target=_thread, daemon=True, name='praxis-grow').start()
+
+    def _check_creation_intent(self, text: str) -> None:
+        """Detect creation intent in a conversation turn and manage the clarification session.
+
+        Called after raw experience is already deposited to the substrate (Law 7 satisfied).
+        One active creation session at a time. 5-minute timeout on stale sessions.
+        """
+        try:
+            from morphogenesis.praxis import PraxisEngine, is_creation_request
+        except ImportError:
+            return
+
+        with self._pending_creation_lock:
+            # Route to open session if one exists and hasn't timed out
+            if self._pending_creation is not None:
+                if time.time() - self._pending_creation['timestamp'] > 300:
+                    logger.debug("[Praxis] Creation session timed out — clearing")
+                    self._pending_creation = None
+                else:
+                    engine = self._pending_creation['engine']
+                    state  = self._pending_creation['state']
+                    q      = self._pending_creation['pending_question']
+                    engine.answer(state, q.field, text)
+                    remaining = engine.clarify(state)
+                    if remaining:
+                        self._pending_creation['pending_question'] = remaining[0]
+                        self._pending_creation['timestamp'] = time.time()
+                        self._ask_via_llm(state, remaining[0])
+                    else:
+                        intent = engine.finalize(state)
+                        self._pending_creation = None
+                        self._fire_grow(intent)
+                    return
+
+            # Check for a new creation request
+            if not is_creation_request(text):
+                return
+
+            engine = PraxisEngine()
+            state  = engine.hear(text)
+            questions = engine.clarify(state)
+
+            if not questions:
+                # Description is clear enough — grow immediately
+                intent = engine.finalize(state)
+                self._fire_grow(intent)
+                return
+
+            self._pending_creation = {
+                'engine':           engine,
+                'state':            state,
+                'pending_question': questions[0],
+                'timestamp':        time.time(),
+            }
+            self._ask_via_llm(state, questions[0])
 
     # -----------------------------------------------------------------
     # Creation interface — Morphogenesis integration
