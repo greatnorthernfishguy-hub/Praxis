@@ -25,12 +25,7 @@ for p in [repo_root, vendored]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-morphogenesis = pytest.importorskip(
-    "morphogenesis",
-    reason="morphogenesis not installed — run: pip3 install -e /home/josh/Morphogenesis",
-)
-
-from morphogenesis.praxis import is_creation_request, PraxisEngine
+from core.praxis_intent import is_creation_request, PraxisEngine
 
 
 # ---------------------------------------------------------------------------

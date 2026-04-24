@@ -22,6 +22,15 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-04-24] Claude Code (Sonnet 4.6) — Decouple creation intent from Morphogenesis research repo
+#   What: core/praxis_intent.py added — self-contained Behavior/OrganismIntent/PraxisEngine/
+#         CREATION_TRIGGERS/is_creation_request. _check_creation_intent now imports from there
+#         instead of from morphogenesis.praxis (research repo). test_creation_intent.py updated
+#         to match.
+#   Why:  Research-stage code has no place coupling into the live ecosystem. Isolation contract.
+#         When Morphogenesis formally integrates (Praxis→Morphogenesis direction), replace local
+#         copy with that import.
+#   How:  from core.praxis_intent import PraxisEngine, is_creation_request
 # [2026-04-23] Claude Code (Sonnet 4.6) — Autonomic creation intent detection
 #   What: _check_creation_intent() watches every inbound conversation turn for
 #         creation requests. Multi-turn clarification via LLM (OpenAI-compat).
@@ -626,10 +635,7 @@ class PraxisHook(OpenClawAdapter):
         Called after raw experience is already deposited to the substrate (Law 7 satisfied).
         One active creation session at a time. 5-minute timeout on stale sessions.
         """
-        try:
-            from morphogenesis.praxis import PraxisEngine, is_creation_request
-        except ImportError:
-            return
+        from core.praxis_intent import PraxisEngine, is_creation_request
 
         with self._pending_creation_lock:
             # Route to open session if one exists and hasn't timed out

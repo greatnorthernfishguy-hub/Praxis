@@ -1,11 +1,16 @@
 # Pre-Commit Security Scan — Praxis
-**Date:** 2026-04-24  **Verdict:** ✅ SAFE TO COMMIT — 0 new findings
+**Date:** 2026-04-24  **Verdict:** ✅ SAFE TO COMMIT
 
 | Severity | New | Existing |
 |----------|-----|----------|
 | 🔴 Critical | 0 | 0 |
 | 🟠 High | 0 | 0 |
-| 🟡 Medium | 0 | 2 |
-| 🟢 Low | 0 | 1 |
+| 🟡 Medium | 0 | 0 |
+| 🟢 Low | 0 | 0 |
+| **Total** | **0** | **0** |
 
-All findings pre-existing in pip/pytest dependencies. 0 secrets, 0 SAST.
+**Risk Score:** 0/100 (No Risk)
+
+**Scanned:** gitleaks · semgrep · grype · checkov (hadolint skipped — no Dockerfile)
+
+No findings.
