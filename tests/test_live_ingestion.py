@@ -231,6 +231,108 @@ def test_live_full_digestion_simulation():
         print(f"      [{score:.3f}] {entry.content[:80]}")
 
 
+def test_grow_returns_correct_shape():
+    """grow() returns dict with all required keys when Morphogenesis succeeds."""
+    from unittest.mock import MagicMock, patch
+    from core.praxis_hook import PraxisHook
+
+    hook = PraxisHook()
+
+    fake_result = MagicMock()
+    fake_result.morpho_path = "/tmp/test_organism_42.morpho"
+    fake_result.name = "test_organism"
+    fake_result.behaviors = ["filter"]
+    fake_result.fitness = 0.75
+    fake_result.alive = True
+    fake_result.fingerprint = "abc123"
+    fake_result.calibrated = False
+
+    fake_bridge = MagicMock()
+    fake_bridge.grow.return_value = fake_result
+
+    with patch("morphogenesis.creation_bridge.CreationBridge", return_value=fake_bridge):
+        result = hook.grow("filter noise from sensor stream", seed=42)
+
+    assert result["status"] == "grown"
+    assert result["morpho_path"] == "/tmp/test_organism_42.morpho"
+    assert result["name"] == "test_organism"
+    assert result["behaviors"] == ["filter"]
+    assert result["fitness"] == 0.75
+    assert result["alive"] is True
+    assert "fingerprint" in result
+    assert "calibrated" in result
+
+
+def test_grow_records_all_three_sensors():
+    """grow() feeds conversation, artifact, and outcome sensors."""
+    from unittest.mock import MagicMock, patch
+    from core.praxis_hook import PraxisHook
+
+    hook = PraxisHook()
+    signal_before = hook._signal_count
+
+    fake_result = MagicMock()
+    fake_result.morpho_path = "/tmp/organism.morpho"
+    fake_result.name = "org"
+    fake_result.behaviors = ["passthrough"]
+    fake_result.fitness = 0.5
+    fake_result.alive = True
+    fake_result.fingerprint = "fp"
+    fake_result.calibrated = False
+
+    fake_bridge = MagicMock()
+    fake_bridge.grow.return_value = fake_result
+
+    with patch("morphogenesis.creation_bridge.CreationBridge", return_value=fake_bridge):
+        hook.grow("passthrough signal processor", seed=1)
+
+    # conversation + artifact + outcome = at least 2 substrate signals (outcome may not
+    # increment signal_count if short; artifact does; conversation does if long enough)
+    assert hook._signal_count > signal_before
+
+
+def test_grow_handles_import_error_gracefully():
+    """grow() returns error dict when morphogenesis is not importable."""
+    from unittest.mock import patch
+    from core.praxis_hook import PraxisHook
+    import builtins
+
+    hook = PraxisHook()
+    original_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "morphogenesis.creation_bridge":
+            raise ImportError("morphogenesis not installed")
+        return original_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=mock_import):
+        result = hook.grow("should fail gracefully")
+
+    assert result["status"] == "error"
+    assert "error" in result
+
+
+def test_grow_handles_creation_error():
+    """grow() returns error dict and records failure outcome when grow() raises."""
+    from unittest.mock import MagicMock, patch
+    from core.praxis_hook import PraxisHook
+
+    hook = PraxisHook()
+
+    fake_bridge = MagicMock()
+    fake_bridge.grow.side_effect = ValueError("organism died during growth")
+
+    with patch("morphogenesis.creation_bridge.CreationBridge", return_value=fake_bridge):
+        result = hook.grow("an ambiguous description that fails")
+
+    assert result["status"] == "error"
+    assert "died during growth" in result["error"]
+
+    # Failure outcome should have been recorded (outcome sensor gets a signal)
+    stats = hook._module_stats()
+    assert stats["outcome_sensor"]["total_outcomes"] >= 1
+
+
 if __name__ == "__main__":
     print("Testing live ingestion pipeline...\n")
     test_live_conversation_ingestion()

@@ -22,6 +22,13 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-05-01] Claude Code (Sonnet 4.6) — #210: grow() — Praxis→Morphogenesis wiring
+#   What: grow(description, seed, output_dir, ...) added. Lazy-imports CreationBridge
+#         from morphogenesis.creation_bridge, delegates growth, records all 3 sensors.
+#   Why:  #210 — integration boundary contract. Direction is Praxis→Morphogenesis only.
+#         Morphogenesis must not import back into Praxis or live ecosystem.
+#   How:  record_conversation (intent), record_artifact (.morpho), record_outcome
+#         (fitness clamped to [0,1]). ImportError returns {"status":"error"} gracefully.
 # [2026-04-24] Claude Code (Sonnet 4.6) — Remove creation interface (ported to Morphogenesis)
 #   What: Removed grow(), start_conversation(), answer_question(), grow_from_session() methods.
 #         Removed _grow_sessions dict and import uuid (only used by start_conversation).
@@ -794,6 +801,102 @@ class PraxisHook(OpenClawAdapter):
             "outcome_type": outcome_type,
             "success": success,
             "reward_strength": round(reward_strength, 4),
+        }
+
+    # -----------------------------------------------------------------
+    # Morphogenesis integration (#210)
+    # Praxis → Morphogenesis (one-way). Morphogenesis must not import back.
+    # -----------------------------------------------------------------
+
+    def grow(
+        self,
+        description: str,
+        seed: Optional[int] = None,
+        output_dir: Optional[str] = None,
+        normal_examples: Optional[List] = None,
+        anomaly_examples: Optional[List] = None,
+        class_examples: Optional[Any] = None,
+        mode: str = "anomaly_score",
+    ) -> Dict[str, Any]:
+        """Grow a living organism from a NL description via Morphogenesis.
+
+        Delegates to morphogenesis.creation_bridge.CreationBridge.grow(),
+        then records the intent, artifact, and outcome through Praxis's
+        three pheromone sensors so the experience enters the substrate.
+
+        Law 1 compliance: no direct substrate call here — all substrate
+        writes are routed through the sensor layer (record_conversation,
+        record_artifact, record_outcome).
+
+        Args:
+            description:      NL description of desired behavior.
+            seed:             Random seed. Random if None.
+            output_dir:       Where to write the .morpho file.
+            normal_examples:  Data for calibration (optional).
+            anomaly_examples: Anomaly data for calibration (optional).
+            class_examples:   Class→[items] dict for classification mode.
+            mode:             Decoder mode ('anomaly_score', 'threshold',
+                              'classification', 'signal_level', 'ranking').
+
+        Returns:
+            Dict with keys: status, morpho_path, name, behaviors,
+            fitness, alive, fingerprint, calibrated.
+        """
+        try:
+            from morphogenesis.creation_bridge import CreationBridge
+        except ImportError as exc:
+            logger.warning("Morphogenesis not available: %s", exc)
+            return {"status": "error", "error": f"Morphogenesis unavailable: {exc}"}
+
+        # Record the NL intent as a conversation signal before growth.
+        self.record_conversation(description, direction="human")
+
+        try:
+            bridge = CreationBridge()
+            result = bridge.grow(
+                description=description,
+                seed=seed,
+                output_dir=output_dir,
+                normal_examples=normal_examples,
+                anomaly_examples=anomaly_examples,
+                class_examples=class_examples,
+                mode=mode,
+            )
+        except Exception as exc:
+            logger.warning("Morphogenesis grow() failed: %s", exc)
+            self.record_outcome(
+                context=description,
+                outcome_type="build",
+                success=False,
+                severity=1.0,
+            )
+            return {"status": "error", "error": str(exc)}
+
+        # Record the .morpho file as an artifact lifecycle event.
+        self.record_artifact(
+            artifact_id=result.morpho_path,
+            content=f"{result.name}: {', '.join(result.behaviors)}",
+            artifact_type="morpho",
+            event_type="created",
+        )
+
+        # Record the growth outcome — fitness clamped to [0,1] for substrate.
+        self.record_outcome(
+            context=description,
+            outcome_type="build",
+            success=result.alive,
+            severity=min(1.0, max(0.0, result.fitness)),
+        )
+
+        return {
+            "status": "grown",
+            "morpho_path": result.morpho_path,
+            "name": result.name,
+            "behaviors": result.behaviors,
+            "fitness": result.fitness,
+            "alive": result.alive,
+            "fingerprint": result.fingerprint,
+            "calibrated": result.calibrated,
         }
 
     def _module_stats(self) -> Dict[str, Any]:
