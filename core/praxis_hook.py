@@ -841,9 +841,11 @@ class PraxisHook(OpenClawAdapter):
     def _read_autonomic(self) -> None:
         """Read current autonomic state. Praxis never writes."""
         try:
-            import ng_autonomic
-            state = ng_autonomic.read_state()
-            self._autonomic_state = state.get("state", "PARASYMPATHETIC")
+            # #328 Step 2: read arousal from the Commons (vagus bucket), not the shared file.
+            from commons import get_commons
+            _c = get_commons()
+            if _c is not None:
+                self._autonomic_state = _c.read_arousal()
         except Exception:
             pass
 
