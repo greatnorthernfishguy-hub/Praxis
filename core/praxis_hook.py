@@ -22,6 +22,17 @@ Canonical source: https://github.com/greatnorthernfishguy-hub/Praxis
 License: AGPL-3.0
 
 # ---- Changelog ----
+# [2026-06-30] Claude Code (Sonnet 4.6) — #329 Commons bucket migration
+#   What: _bucket_commons_substrate() in _pulse_cycle() reads metrics:neurograph:*
+#         from Commons → _commons_substrate_activity EWMA. Closes the dark inbound
+#         path left when _deposit_topology_delta() was no-op'd 2026-06-07.
+#         Bucket-only: Praxis's semantic signals (conversation embeddings) belong
+#         in its own NG-Lite substrate, not the shared Commons. Deposit deferred.
+#   Why:  #329 Commons migration. Praxis inbound tracts are dark (NG no longer feeds
+#         them). Bucketing from Commons gives live substrate-state awareness.
+#   How:  _commons_seen dedup set + _commons_substrate_activity EWMA in __init__.
+#         _bucket_commons_substrate() method. _pulse_cycle() call after _drain_river().
+#         Exposed in _module_stats() + health(). Mirrors Darwin/Elmer bucket pattern.
 # [2026-05-03] Claude Code (Sonnet 4.6) — Revert #210: grow() removed from Syl's Praxis
 #   What: Removed grow() that was mistakenly added to Syl's live PraxisHook.
 #   Why:  grow() belongs in Morphogenesis's own PraxisEngine (morphogenesis/praxis.py),
@@ -257,6 +268,13 @@ class PraxisHook(OpenClawAdapter):
         self._autonomic_state = "PARASYMPATHETIC"
         self._read_autonomic()
 
+        # --- #329 Commons bucket: NG substrate metrics for activity awareness ---
+        # Bucket-only: Praxis's semantic signals live in its own NG-Lite substrate.
+        # EWMA gives the conversation sensor substrate context (e.g. high activity =
+        # substrate is actively processing = conversation is embedding-dense territory).
+        self._commons_seen: set = set()
+        self._commons_substrate_activity: float = 0.5  # EWMA; 0.5 = neutral/unknown
+
         # --- Checkpointing ---
         self._last_checkpoint = time.time()
         self._checkpoint_interval = self._cfg.checkpoint_interval_seconds
@@ -307,6 +325,7 @@ class PraxisHook(OpenClawAdapter):
     def _pulse_cycle(self):
         """One pulse cycle — drain River tracts, route to sensors (raw embeddings, Law 7)."""
         self._drain_river()
+        self._bucket_commons_substrate()  # #329 substrate-state awareness from Commons
 
     def _on_river_events(self, events: list) -> None:
         """Route new River events to domain sensors via _route_pulse_event."""
@@ -385,6 +404,48 @@ class PraxisHook(OpenClawAdapter):
                     )
             except Exception as exc:
                 logger.debug("Pulse substrate record error: %s", exc)
+
+    def _bucket_commons_substrate(self) -> None:
+        """Bucket NG substrate metrics from Commons — substrate-state activity EWMA.
+
+        Reads metrics:neurograph:* deposits from the shared Commons on each pulse.
+        Updates _commons_substrate_activity (EWMA) — gives Praxis live awareness of
+        substrate load even when NG tract deposits are dark (tracts throttled 2026-06-07).
+        Bucket-only: Praxis's semantic signals belong in its own NG-Lite substrate.
+        Fail-soft throughout: Commons unavailability never breaks the pulse.
+        """
+        try:
+            from commons import get_commons
+            commons = get_commons()
+        except Exception:
+            return
+        if commons is None:
+            return
+        try:
+            recs = commons.bucket_recent(limit=50, with_metadata=True)
+        except Exception as exc:
+            logger.debug("Praxis Commons bucket failed: %s", exc)
+            return
+        for target_id, _w, _r, meta in recs:
+            if not target_id.startswith("metrics:neurograph:") or target_id in self._commons_seen:
+                continue
+            if not isinstance(meta, dict):
+                continue
+            self._commons_seen.add(target_id)
+            salience = meta.get("salience", "")
+            if salience == "anomaly":
+                activity = float(meta.get("signal", 0.0))
+            elif salience == "nominal":
+                agg = meta.get("aggregate", {}) or {}
+                total = agg.get("predictions_confirmed", 0) + agg.get("predictions_surprised", 0)
+                activity = min(1.0, total / 100.0) if total else 0.0
+            else:
+                continue
+            self._commons_substrate_activity = (
+                0.8 * self._commons_substrate_activity + 0.2 * activity
+            )
+        if len(self._commons_seen) > 4096:
+            self._commons_seen = set(list(self._commons_seen)[-2048:])
 
     def _ingest_conversation(self, conversation: dict, embedding: np.ndarray) -> None:
         """Process conversation content from a topology delta.
@@ -809,6 +870,7 @@ class PraxisHook(OpenClawAdapter):
             "turn_index": self._turn_index,
             "signal_count": self._signal_count,
             "autonomic_state": self._autonomic_state,
+            "commons_substrate_activity": round(self._commons_substrate_activity, 4),
             "conversation_sensor": self._conv_sensor.get_stats(),
             "artifact_sensor": self._art_sensor.get_stats(),
             "outcome_sensor": self._out_sensor.get_stats(),
@@ -831,6 +893,7 @@ class PraxisHook(OpenClawAdapter):
             "cps_entries": self._cps.count,
             "conversation_window": len(self._conv_sensor._recent),
             "autonomic_state": self._autonomic_state,
+            "commons_substrate_activity": round(self._commons_substrate_activity, 4),
             "uptime_seconds": round(time.time() - self._start_time, 1),
         }
 
