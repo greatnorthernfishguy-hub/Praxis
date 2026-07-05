@@ -10,3 +10,10 @@ build/
 .venv/
 env/
 venv/
+
+# Ecosystem-wide hygiene standard (repo-hygiene bot)
+data/checkpoints/
+*.pt
+fastembed_cache/
+node_modules/
+.neurograph/
